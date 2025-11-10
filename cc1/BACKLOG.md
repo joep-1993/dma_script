@@ -35,4 +35,4 @@ _What are we building and why?_
 _Capture ideas for future consideration_
 
 ---
-_Created: {{CREATION_DATE}}_
+_Created: 2025-11-10_

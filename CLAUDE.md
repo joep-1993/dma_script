@@ -32,4 +32,4 @@ This project uses the CC1 documentation system for knowledge management.
 - JS: `frontend/js/app.js`
 
 ---
-_Template initialized: {{CREATION_DATE}}_
+_Template initialized: 2025-11-10_

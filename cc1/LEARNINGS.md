@@ -41,4 +41,4 @@ docker exec -it <container> bash  # Enter container
 - Works identically on any machine with Docker
 
 ---
-_Created from template: {{CREATION_DATE}}_
+_Created from template: 2025-11-10_

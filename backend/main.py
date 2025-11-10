@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 from datetime import datetime
 
-app = FastAPI(title="{{PROJECT_NAME}}", version="1.0.0")
+app = FastAPI(title="dma-shop-campaigns", version="1.0.0")
 
 # CORS for frontend
 app.add_middleware(
@@ -21,7 +21,7 @@ app.mount("/static", StaticFiles(directory="frontend"), name="static")
 def read_root():
     return {
         "status": "running",
-        "project": "{{PROJECT_NAME}}",
+        "project": "dma-shop-campaigns",
         "timestamp": datetime.now().isoformat()
     }
 

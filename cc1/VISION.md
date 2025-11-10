@@ -121,7 +121,7 @@ VISION.md (update with results)
 
 _Track how your product vision changes over time as you learn_
 
-**{{TODAY}}** - Initial vision: [Starting hypothesis about what users need]
+**2025-11-10** - Initial vision: [Starting hypothesis about what users need]
 
 ---
 

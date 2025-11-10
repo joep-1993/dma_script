@@ -1,4 +1,4 @@
-# {{PROJECT_NAME}}
+# dma-shop-campaigns
 
 FastAPI + PostgreSQL + Docker application with AI integration.
 

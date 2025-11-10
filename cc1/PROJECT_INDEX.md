@@ -6,7 +6,7 @@ Backend: FastAPI (Python 3.11) | Frontend: Bootstrap 5 + Vanilla JS | Database: 
 
 ## Directory Structure
 ```
-{{PROJECT_NAME}}/
+dma-shop-campaigns/
 ├── cc1/                   # CC1 documentation
 │   ├── TASKS.md          # Task tracking
 │   ├── LEARNINGS.md      # Knowledge capture
@@ -59,4 +59,4 @@ CREATE TABLE items (
 - `GET /static/*` - Frontend files
 
 ---
-_Last updated: {{CREATION_DATE}}_
+_Last updated: 2025-11-10_
