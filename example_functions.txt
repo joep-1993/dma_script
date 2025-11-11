@@ -1,0 +1,478 @@
+
+def rebuild_tree_with_label_and_item_ids(
+    client,
+    customer_id: str,
+    ad_group_id: int,
+    ad_group_name: str,
+    item_ids=None,
+    default_bid_micros: int = 200_000
+):
+    """
+    Copies the entire existing listing tree structure and adds Item-ID exclusions
+    at the lowest subdivision level(s). If multiple nodes exist at the same lowest
+    level, Item-ID exclusions are added to all of them.
+
+    Structure approach:
+    - Reads existing tree from the ad group
+    - Identifies all subdivision nodes at the deepest level
+    - For each of those subdivisions, adds:
+      ├─ Item ID OTHERS [POSITIVE, biddable] → Show all items
+      └─ Specific Item IDs [NEGATIVE] → Block unwanted items
+
+    Args:
+        client: GoogleAdsClient instance
+        customer_id: Customer ID
+        ad_group_id: Ad group ID
+        ad_group_name: Ad group name to extract label from
+        item_ids: List of item IDs to EXCLUDE (negative targeting)
+        default_bid_micros: Default bid in micros (default: 200,000 = €0.20)
+    """
+    import time
+
+    if item_ids is None:
+        item_ids = []
+
+    # Extract label from ad group name
+    keep_label_value = ad_group_name.lower().strip().replace("_", " ")
+    valid_labels = ["a", "b", "c", "no data", "no ean", "promo", "Merk"]
+    #print(keep_label_value)
+    if keep_label_value not in valid_labels:
+        print(f"⚠️ Ad group name '{ad_group_name}' (lowercase: '{keep_label_value}') is not a valid label. Valid options: {valid_labels}. Skipping tree rebuild.")
+        return
+
+    # Step 1: Read existing tree structure
+    ga_service = client.get_service("GoogleAdsService")
+    ag_service = client.get_service("AdGroupService")
+    ag_path = ag_service.ad_group_path(customer_id, ad_group_id)
+
+    query = f"""
+        SELECT
+            ad_group_criterion.resource_name,
+            ad_group_criterion.listing_group.type,
+            ad_group_criterion.listing_group.parent_ad_group_criterion,
+            ad_group_criterion.listing_group.case_value.product_custom_attribute.index,
+            ad_group_criterion.listing_group.case_value.product_custom_attribute.value,
+            ad_group_criterion.listing_group.case_value.product_item_id.value,
+            ad_group_criterion.negative,
+            ad_group_criterion.cpc_bid_micros
+        FROM ad_group_criterion
+        WHERE ad_group_criterion.ad_group = '{ag_path}'
+            AND ad_group_criterion.type = 'LISTING_GROUP'
+    """
+
+    try:
+        results = list(ga_service.search(customer_id=customer_id, query=query))
+    except Exception as e:
+        print(f"❌ Error reading existing tree: {e}")
+        return
+
+    if not results:
+        print("ℹ️ No existing tree found. Creating new tree structure.")
+        # Fall back to creating standard tree (with default promo exclusion)
+        _create_standard_tree(client, customer_id, ad_group_id, keep_label_value, item_ids, default_bid_micros, custom_label_structures=[{'index': 'INDEX1', 'value': 'promo', 'negative': True, 'bid_micros': None}])
+        return
+
+    # Step 2: Build tree structure map and find lowest subdivision level
+    tree_map = {}
+    depth_map = {}
+
+    for row in results:
+        criterion = row.ad_group_criterion
+        res_name = criterion.resource_name
+        lg = criterion.listing_group
+        parent = lg.parent_ad_group_criterion
+
+        tree_map[res_name] = {
+            'resource_name': res_name,
+            'type': lg.type_.name,
+            'parent': parent if parent else None,
+            'case_value': lg.case_value,
+            'negative': criterion.negative,
+            'bid_micros': criterion.cpc_bid_micros,
+            'children': []
+        }
+
+    # Build parent-child relationships
+    for res_name, node_data in tree_map.items():
+        parent = node_data['parent']
+        if parent and parent in tree_map:
+            tree_map[parent]['children'].append(res_name)
+
+    # Calculate depths
+    def calculate_depth(res_name):
+        if res_name in depth_map:
+            return depth_map[res_name]
+        parent = tree_map[res_name]['parent']
+        if not parent:
+            depth = 0
+        else:
+            depth = 1 + calculate_depth(parent)
+        depth_map[res_name] = depth
+        return depth
+
+    for res_name in tree_map.keys():
+        calculate_depth(res_name)
+
+    # Find ALL subdivisions in the tree
+    subdivision_nodes = [res_name for res_name, node in tree_map.items()
+                        if node['type'] == 'SUBDIVISION']
+
+    if not subdivision_nodes:
+        print("⚠️ No subdivision nodes found in existing tree. Cannot add Item-ID exclusions.")
+        return
+
+    # Find subdivisions that should have Item-ID children
+    # Strategy: Find all subdivisions that have UNIT children (these are "terminal" subdivisions)
+    # or subdivisions that have no children at all
+    target_subdivisions = []
+
+    for sub_res in subdivision_nodes:
+        children = tree_map[sub_res]['children']
+
+        if not children:
+            # No children - this is a leaf subdivision
+            target_subdivisions.append(sub_res)
+        else:
+            # Check if it has any UNIT children
+            has_unit_children = any(tree_map[child]['type'] == 'UNIT' for child in children)
+            # Check if it has any SUBDIVISION children
+            has_subdivision_children = any(tree_map[child]['type'] == 'SUBDIVISION' for child in children)
+
+            if has_unit_children and not has_subdivision_children:
+                # Has UNIT children but no SUBDIVISION children - this is a terminal subdivision
+                target_subdivisions.append(sub_res)
+
+    if not target_subdivisions:
+        # Fallback: use deepest subdivisions
+        max_depth = max(depth_map[res_name] for res_name in subdivision_nodes)
+        target_subdivisions = [res_name for res_name in subdivision_nodes
+                              if depth_map[res_name] == max_depth]
+
+    print(f"Found {len(target_subdivisions)} target subdivision(s) for Item-ID exclusions")
+
+    # Collect ALL custom label structures from the original tree (both exclusions and subdivisions)
+    custom_label_structures = []
+    for res_name, node in tree_map.items():
+        case_val = node['case_value']
+        if (case_val and
+            case_val._pb.WhichOneof("dimension") == "product_custom_attribute"):
+            index_name = case_val.product_custom_attribute.index.name
+            value = case_val.product_custom_attribute.value
+
+            # Skip the label itself (INDEX0 with the keep_label_value) and OTHERS cases
+            if index_name == 'INDEX0':
+                continue
+            if not value or value == '':  # OTHERS case
+                continue
+
+            # Store all custom label units (both negative and positive)
+            if node['type'] == 'UNIT':
+                custom_label_structures.append({
+                    'index': index_name,
+                    'value': value,
+                    'negative': node['negative'],
+                    'bid_micros': node['bid_micros']
+                })
+
+    if custom_label_structures:
+        print(f"    ℹ️ Original tree has {len(custom_label_structures)} custom label structure(s), will preserve them:")
+        for struct in custom_label_structures:
+            neg_str = "[NEGATIVE]" if struct['negative'] else "[POSITIVE]"
+            print(f"       - {struct['index']}: '{struct['value']}' {neg_str}")
+
+    # Step 3: For each lowest subdivision, add Item-ID exclusions
+    agc_service = client.get_service("AdGroupCriterionService")
+
+    # Deduplicate item IDs
+    unique_item_ids = list(dict.fromkeys(item_ids)) if item_ids else []
+
+    # Print Item-IDs being excluded
+    if unique_item_ids:
+        print(f"📋 Excluding {len(unique_item_ids)} Item-ID(s) from label '{keep_label_value}':")
+        for idx, item_id in enumerate(unique_item_ids[:10], 1):  # Show first 10
+            print(f"   {idx}. '{item_id}'")
+        if len(unique_item_ids) > 10:
+            print(f"   ... and {len(unique_item_ids) - 10} more")
+
+    subdivisions_processed = 0
+
+    # FIRST PASS: Collect all subdivisions that need UNIT-to-SUBDIVISION conversion
+    # These must be processed together in a single tree rebuild to avoid overwriting changes
+    subdivisions_needing_rebuild = []
+
+    for sub_res_name in target_subdivisions:
+        children = tree_map[sub_res_name]['children']
+
+        if not children:
+            continue
+
+        # Check what type of children exist
+        has_item_id_others = False
+        has_non_item_id_units = False
+        positive_non_item_id_units = []  # Collect ALL positive units to convert
+
+        for child_res in children:
+            child_node = tree_map[child_res]
+            case_val = child_node['case_value']
+
+            if case_val:
+                dim_type = case_val._pb.WhichOneof("dimension")
+
+                if dim_type == "product_item_id":
+                    try:
+                        item_id_value = case_val.product_item_id.value
+                        if not item_id_value:
+                            has_item_id_others = True
+                    except:
+                        has_item_id_others = True
+
+                elif dim_type == "product_custom_attribute":
+                    if child_node['type'] == 'UNIT':
+                        has_non_item_id_units = True
+                        # Collect POSITIVE (non-negative) units for conversion
+                        # This includes both OTHERS and VALUE units
+                        if not child_node['negative']:
+                            positive_non_item_id_units.append({
+                                'res_name': child_res,
+                                'case_value': case_val,
+                                'bid_micros': child_node['bid_micros']
+                            })
+                else:
+                    if child_node['type'] == 'UNIT':
+                        has_non_item_id_units = True
+            else:
+                if child_node['type'] == 'UNIT' and not child_node['negative']:
+                    has_item_id_others = True
+                elif child_node['type'] == 'UNIT':
+                    has_non_item_id_units = True
+
+        # If this subdivision needs UNIT-to-SUBDIVISION conversion, collect it
+        # Need: positive non-Item-ID units AND no existing Item-ID level
+        if has_non_item_id_units and positive_non_item_id_units and not has_item_id_others:
+            subdivisions_needing_rebuild.append({
+                'res_name': sub_res_name,
+                'positive_units_to_convert': positive_non_item_id_units,  # All positive units
+                'children': children
+            })
+
+    # If we have subdivisions needing rebuild, process them ALL in a single tree rebuild
+    if subdivisions_needing_rebuild:
+        print(f"  Found {len(subdivisions_needing_rebuild)} subdivision(s) needing tree rebuild")
+        print(f"  Processing all in a single tree rebuild to preserve changes...")
+        try:
+            _convert_unit_to_subdivision_atomic(
+                client, customer_id, ad_group_id, agc_service,
+                subdivisions_needing_rebuild,  # Pass ALL targets
+                unique_item_ids, default_bid_micros,
+                tree_map, custom_label_structures
+            )
+            subdivisions_processed += len(subdivisions_needing_rebuild)
+        except Exception as e:
+            print(f"    ❌ Error during tree rebuild: {e}")
+
+    # SECOND PASS: Process other cases (Item-ID OTHERS exists, no children, etc.)
+    for sub_res_name in target_subdivisions:
+        # Skip if already processed in rebuild
+        if any(s['res_name'] == sub_res_name for s in subdivisions_needing_rebuild):
+            continue
+
+        print(f"  Processing subdivision: {sub_res_name}")
+
+        children = tree_map[sub_res_name]['children']
+
+        if not children:
+            # Case 1: No children - directly add Item-ID structure
+            print(f"    No children found, adding Item-ID structure directly")
+            _add_item_id_exclusions_to_subdivision(
+                client, customer_id, ad_group_id, agc_service,
+                sub_res_name, unique_item_ids, default_bid_micros,
+                skip_others=False
+            )
+            subdivisions_processed += 1
+            continue
+
+        # Check what type of children exist
+        has_item_id_others = False
+        has_item_id_exclusions = False
+        has_non_item_id_units = False
+
+        for child_res in children:
+            child_node = tree_map[child_res]
+            case_val = child_node['case_value']
+
+            if case_val:
+                dim_type = case_val._pb.WhichOneof("dimension")
+
+                if dim_type == "product_item_id":
+                    try:
+                        item_id_value = case_val.product_item_id.value
+                        if not item_id_value:
+                            has_item_id_others = True
+                        else:
+                            if child_node['negative']:
+                                has_item_id_exclusions = True
+                    except:
+                        has_item_id_others = True
+                elif dim_type == "product_custom_attribute":
+                    if child_node['type'] == 'UNIT':
+                        has_non_item_id_units = True
+                else:
+                    if child_node['type'] == 'UNIT':
+                        has_non_item_id_units = True
+            else:
+                if child_node['type'] == 'UNIT' and not child_node['negative']:
+                    has_item_id_others = True
+                elif child_node['type'] == 'UNIT':
+                    has_non_item_id_units = True
+
+        # Decision logic based on what exists
+        if has_item_id_others:
+            # Item ID OTHERS exists - just add new exclusions
+            print(f"    Item-ID OTHERS already exists, adding new exclusions")
+            _add_item_id_exclusions_to_subdivision(
+                client, customer_id, ad_group_id, agc_service,
+                sub_res_name, unique_item_ids, default_bid_micros,
+                skip_others=True
+            )
+            subdivisions_processed += 1
+
+        elif has_non_item_id_units:
+            # Has other units but no clear OTHERS to convert
+            print(f"    No Item-ID structure found, adding Item-ID OTHERS + exclusions")
+            _add_item_id_exclusions_to_subdivision(
+                client, customer_id, ad_group_id, agc_service,
+                sub_res_name, unique_item_ids, default_bid_micros,
+                skip_others=False
+            )
+            subdivisions_processed += 1
+
+        else:
+            # No relevant children - add Item ID structure
+            print(f"    Adding Item-ID structure")
+            _add_item_id_exclusions_to_subdivision(
+                client, customer_id, ad_group_id, agc_service,
+                sub_res_name, unique_item_ids, default_bid_micros,
+                skip_others=False
+            )
+            subdivisions_processed += 1
+
+    unique_count = len(unique_item_ids)
+    total_count = len(item_ids)
+    if total_count > unique_count:
+        print(f"✅ Tree updated: Added exclusions for {unique_count} unique Item IDs ({total_count-unique_count} duplicates removed) to {subdivisions_processed} subdivision(s)")
+    else:
+        print(f"✅ Tree updated: Added exclusions for {unique_count} Item IDs to {subdivisions_processed} subdivision(s)")
+
+
+def rebuild_tree_with_specific_item_ids(
+    client,
+    customer_id: str,
+    ad_group_id: int,
+    item_ids=None,                 # list of item IDs to INCLUDE (positive targeting)
+    default_bid_micros: int = 200_000
+):
+    """
+    Creates tree structure with INCLUSIVE logic:
+    Root SUBDIVISION
+    ├─ Item ID OTHERS [NEGATIVE] → Blocks all items except specific IDs
+    └─ Specific Item IDs [POSITIVE, biddable] → Show only these items
+
+    This uses INCLUSIVE logic: ONLY show specific IDs, block everything else.
+    """
+    if item_ids is None:
+        item_ids = []
+
+    # CRITICAL FIX: Ensure item_ids is a list, not a string
+    # If it's a string, iterating over it gives individual characters!
+    if isinstance(item_ids, str):
+        print(f"⚠️ WARNING: item_ids was a string, not a list! Converting...")
+        print(f"   String value: '{item_ids[:100]}...'")
+        # Try to parse it as comma-separated
+        import re
+        splitter = re.compile(r"[;,|\s]+")
+        item_ids = [p.strip() for p in splitter.split(item_ids) if p.strip()]
+        print(f"   Converted to list with {len(item_ids)} items")
+
+    if not item_ids:
+        print("⚠️ No item IDs provided - skipping tree rebuild")
+        return
+
+    # 1) Oude boom veilig verwijderen
+    safe_remove_entire_listing_tree(client, customer_id, str(ad_group_id))
+
+    agc = client.get_service("AdGroupCriterionService")
+
+    # MUTATE 1: Create root SUBDIVISION + Item ID OTHERS (negative)
+    ops1 = []
+
+    # 1. ROOT SUBDIVISION (no case_value - root is always just "everything")
+    root_op = create_listing_group_subdivision(
+        client=client,
+        customer_id=customer_id,
+        ad_group_id=str(ad_group_id),
+        parent_ad_group_criterion_resource_name=None,
+        listing_dimension_info=None  # Root has no dimension
+    )
+    root_tmp = root_op.create.resource_name
+    ops1.append(root_op)
+
+    # 2. Item ID OTHERS (negative - blocks everything except specific IDs)
+    dim_itemid_others = client.get_type("ListingDimensionInfo")
+    client.copy_from(
+        dim_itemid_others.product_item_id,
+        client.get_type("ProductItemIdInfo"),
+    )
+    # Don't set value - OTHERS case
+    ops1.append(
+        create_listing_group_unit_biddable(
+            client=client,
+            customer_id=customer_id,
+            ad_group_id=str(ad_group_id),
+            parent_ad_group_criterion_resource_name=root_tmp,
+            listing_dimension_info=dim_itemid_others,
+            targeting_negative=True,  # NEGATIVE - blocks everything else
+            cpc_bid_micros=None
+        )
+    )
+
+    # Execute first mutate
+    resp1 = agc.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
+    root_actual = resp1.results[0].resource_name
+    time.sleep(0.5)  # Wait for criteria to propagate
+
+    # MUTATE 2: Add specific Item IDs as POSITIVE units (to show only them)
+    ops2 = []
+
+    # Deduplicate the list to avoid LISTING_GROUP_ALREADY_EXISTS errors
+    unique_item_ids = list(dict.fromkeys(item_ids))  # Preserves order while deduplicating
+
+    # Debug: Print IDs being sent to Google Ads
+    print(f"DEBUG: Sending {len(unique_item_ids)} unique Item IDs to Google Ads:")
+    for idx, item_id in enumerate(unique_item_ids[:5], 1):  # Show first 5
+        print(f"  {idx}. '{item_id}' (length: {len(str(item_id))})")
+    if len(unique_item_ids) > 5:
+        print(f"  ... and {len(unique_item_ids) - 5} more")
+
+    for item_id in unique_item_ids:
+        dim_item = client.get_type("ListingDimensionInfo")
+        dim_item.product_item_id.value = str(item_id)
+        ops2.append(
+            create_listing_group_unit_biddable(
+                client=client,
+                customer_id=customer_id,
+                ad_group_id=str(ad_group_id),
+                parent_ad_group_criterion_resource_name=root_actual,
+                listing_dimension_info=dim_item,
+                targeting_negative=False,  # POSITIVE targeting
+                cpc_bid_micros=default_bid_micros
+            )
+        )
+
+    if ops2:
+        agc.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
+        unique_count = len(unique_item_ids)
+        total_count = len(item_ids)
+        if total_count > unique_count:
+            print(f"✅ Tree rebuilt: ONLY show {unique_count} unique Item IDs ({total_count-unique_count} duplicates removed), block all others.")
+        else:
+            print(f"✅ Tree rebuilt: ONLY show {unique_count} Item IDs, block all others.")

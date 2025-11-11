@@ -1,40 +1,63 @@
 # PROJECT INDEX
 _Project structure and technical specs. Update when: creating files, adding dependencies, defining schemas._
 
+## Project Purpose
+**Google Ads Campaign Automation**: Python script that processes Excel files to automatically update Google Ads Shopping campaigns with custom label 3 targeting (shop name inclusion/exclusion).
+
 ## Stack
-Backend: FastAPI (Python 3.11) | Frontend: Bootstrap 5 + Vanilla JS | Database: PostgreSQL 15 | AI: OpenAI API | Deploy: Docker + docker-compose
+**Primary**: Python 3.10+ script with Google Ads API | **Excel Processing**: openpyxl | **Automation**: Custom Label 3 listing tree rebuilding
+**Optional Web UI**: FastAPI (Python 3.11) | Frontend: Bootstrap 5 + Vanilla JS | Database: PostgreSQL 15 | AI: OpenAI API | Deploy: Docker + docker-compose
 
 ## Directory Structure
 ```
 dma-shop-campaigns/
-├── cc1/                   # CC1 documentation
-│   ├── TASKS.md          # Task tracking
-│   ├── LEARNINGS.md      # Knowledge capture
-│   ├── BACKLOG.md        # Future planning
-│   └── PROJECT_INDEX.md  # This file
-├── backend/
-│   ├── main.py           # FastAPI app with CORS
-│   ├── database.py       # PostgreSQL connection
-│   └── gpt_service.py    # AI integration
-├── frontend/
-│   ├── index.html        # Main page (Bootstrap CDN)
+├── cc1/                          # CC1 documentation
+│   ├── TASKS.md                  # Task tracking
+│   ├── LEARNINGS.md              # Knowledge capture
+│   ├── BACKLOG.md                # Future planning
+│   └── PROJECT_INDEX.md          # This file
+├── campaign_processor.py         # ⭐ Main script - Google Ads campaign automation
+├── google_ads_helpers.py         # Helper functions for listing tree operations
+├── test_google_ads_init.py       # Test script for credentials verification
+├── test_campaign_processor.py    # Test script for setup validation
+├── toelichting.txt               # Requirements specification (Dutch)
+├── example_functions.txt         # Reference functions for listing trees
+├── CAMPAIGN_PROCESSOR_README.md  # Main script documentation
+├── PYCHARM_SETUP.md              # PyCharm setup guide
+├── OS_DETECTION_INFO.md          # OS detection feature docs
+├── backend/                      # (Optional web UI)
+│   ├── main.py                   # FastAPI app with CORS
+│   ├── database.py               # PostgreSQL connection
+│   └── gpt_service.py            # AI integration
+├── frontend/                     # (Optional web UI)
+│   ├── index.html                # Main page (Bootstrap CDN)
 │   ├── css/
-│   │   └── style.css     # Custom styles
+│   │   └── style.css             # Custom styles
 │   └── js/
-│       └── app.js        # Vanilla JavaScript
-├── docker-compose.yml    # Service orchestration
-├── Dockerfile           # Python container
-├── requirements.txt     # Python dependencies
-├── .env.example        # Environment template
-├── .env                # Local environment (git ignored)
-├── .gitignore          # Version control excludes
-├── README.md           # Quick start guide
-└── CLAUDE.md           # Claude Code instructions
+│       └── app.js                # Vanilla JavaScript
+├── docker-compose.yml            # Service orchestration
+├── Dockerfile                    # Python container
+├── requirements.txt              # Python dependencies (includes google-ads, openpyxl)
+├── .env.example                  # Environment template (includes GOOGLE_ADS_* vars)
+├── .env                          # Local environment (git ignored)
+├── .gitignore                    # Version control excludes
+├── README.md                     # Quick start guide
+└── CLAUDE.md                     # Claude Code instructions
 ```
 
 ## Environment Variables
 
-### Required
+### Required for Campaign Processor
+```bash
+# Google Ads API Credentials (CRITICAL)
+GOOGLE_ADS_DEVELOPER_TOKEN=your_developer_token
+GOOGLE_ADS_CLIENT_ID=your_client_id.apps.googleusercontent.com
+GOOGLE_ADS_CLIENT_SECRET=your_client_secret
+GOOGLE_ADS_REFRESH_TOKEN=your_refresh_token
+GOOGLE_ADS_LOGIN_CUSTOMER_ID=1234567890  # Optional: MCC account ID
+```
+
+### Optional (for web UI)
 ```bash
 OPENAI_API_KEY=sk-...  # Your OpenAI API key
 DATABASE_URL=postgresql://postgres:postgres@db:5432/myapp
@@ -52,11 +75,50 @@ CREATE TABLE items (
 );
 ```
 
-## API Endpoints
+## Python Dependencies
+
+### Core Dependencies
+```
+google-ads==24.1.0        # Google Ads API client library
+openpyxl==3.1.2          # Excel file reading/writing
+python-dotenv==1.0.0     # Environment variable management
+```
+
+### Optional (Web UI)
+```
+fastapi==0.104.1         # Web framework
+uvicorn[standard]==0.24.0 # ASGI server
+openai==1.35.0           # OpenAI API client
+psycopg2-binary==2.9.9   # PostgreSQL driver
+```
+
+## Script Execution
+
+### Main Script
+```bash
+python3 campaign_processor.py
+```
+
+**What it does**:
+1. Loads Google Ads credentials from `.env`
+2. Reads Excel file with two sheets: `toevoegen` (inclusion) and `uitsluiten` (exclusion)
+3. For each row:
+   - Finds campaign by pattern: `PLA/{category}_{custom_label_1}`
+   - Retrieves ad group from campaign
+   - Rebuilds listing tree with Custom Label 3 targeting (shop name)
+   - Updates column F with TRUE (success) or FALSE (failed)
+4. Saves results back to Excel file
+
+**Key Features**:
+- Auto-detects OS (Windows/WSL) and uses correct file paths
+- Processes both inclusion (target shop) and exclusion (block shop) logic
+- Comprehensive error handling and progress reporting
+
+## API Endpoints (Optional Web UI)
 - `GET /` - System status
 - `GET /api/health` - Health check
 - `POST /api/generate` - AI text generation
 - `GET /static/*` - Frontend files
 
 ---
-_Last updated: 2025-11-10_
+_Last updated: 2025-11-11_

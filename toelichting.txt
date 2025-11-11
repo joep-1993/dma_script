@@ -1,0 +1,27 @@
+Customer id: 3800751597
+
+Input Excel ('c:/Users/JoepvanSchagen/Downloads/dma_script_ivor.xlsx') should be read. It has 2 sheets, which should be 2 different functions. One to include and one to exclude items. First the inclusion. 
+
+Retrieve sheet 'toevoegen'. These are the column headers:
+1. Shop name
+2. Shop ID
+3. cat_toevoegen
+4. Diepste cat iD
+5. custom label 1
+
+For each line, a campaign (if available) should be retreived from customer 3800751597, with campaign name 'PLA/*cat_uitsluiten*_*custom label 1*.
+Next, the ad group within the campaign should be retreived. Then, the listing tree within the ad group should be rebuild. The rebuild function can be based upon the function 'rebuild_tree_with_specific_item_ids' in 'example_functions.txt'. However, the modification of the listing tree should be that the value of 'Shop name' is TARGETED as custom label 3. 
+
+If the inclusion is successfull, the value of that specific line in Excel column F (6th column) should be set to TRUE. If not successfull, set to FALSE.
+
+Second, the exclusion function. Retrieve sheet 'uitsluiten'. These are the column headers:
+1. Shop name
+2. Shop ID
+3. cat_uitsluiten
+4. Diepste cat iD
+5. custom label 1
+
+For each line, a campaign (if available) should be retreived from customer 3800751597, with campaign name 'PLA/*cat_uitsluiten*_*custom label 1*.
+Next, the ad group within the campaign should be retrieved. Then, the listing tree within the ad group should be rebuild. The rebuild function can be based upon the function 'rebuild_tree_with_label_and_item_ids' in 'example_functions.txt'. However, the modification of the listing tree should be that the value of 'Shop name' is EXCLUDED as custom label 3.
+
+If the exclusion is successfull, the value of that specific line in Excel column F (6th column) should be set to TRUE. If not successfull, set to FALSE.
