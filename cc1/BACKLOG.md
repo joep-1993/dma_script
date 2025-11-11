@@ -26,6 +26,12 @@ _What are we building and why?_
 - [ ] Monitoring
 
 ## Technical Debt
+- [ ] Validate Excel column structure before processing #priority:medium
+  - Check inclusion sheet has 8 columns (A-H) before processing
+  - Check exclusion sheet has 6 columns (A-F) before processing
+  - Provide clear error message if column structure doesn't match expected format
+  - Prevents cryptic "column index out of range" errors
+  _#claude-session:2025-11-11_
 - [ ] Add comprehensive error handling for Google Ads API failures #priority:high
   - Implement retry logic for transient failures
   - Better handling of rate limits

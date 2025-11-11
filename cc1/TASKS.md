@@ -14,6 +14,17 @@ _Tasks currently being worked on (max 1-2 items)_
 ## Completed
 _Recently finished tasks_
 
+- [x] Refactor inclusion logic with campaign/ad group creation #claude-session:2025-11-11 #priority:critical
+  - Groups rows by (shop_name, maincat, custom_label_1) before processing
+  - Creates campaigns with pattern: PLA/{maincat} {shop_name}_{custom_label_1}
+  - Creates ad groups with pattern: PLA/{shop_name}_{custom_label_1}
+  - Builds hierarchical listing tree: Shop (CL3) → Categories (CL0)
+  - Updated column structure: 8 columns for inclusion, 6 for exclusion
+- [x] Fix multiple critical errors in campaign processor #claude-session:2025-11-11 #priority:high
+  - Fixed tracking_url_template "Too short" error (only set when non-empty)
+  - Fixed column index mismatch between inclusion/exclusion sheets
+  - Fixed undefined client parameter in labelCampaign function
+  - Added merchant_center_account_id (140784594), budget (10 EUR), country (NL)
 - [x] Implement Google Ads campaign processor script #claude-session:2025-11-11 #priority:critical
   - Full Python script with Excel processing, OS detection, and Google Ads API integration
   - Processes inclusion (toevoegen) and exclusion (uitsluiten) sheets
@@ -24,6 +35,8 @@ _Recently finished tasks_
 - [x] Implement helper functions for listing tree operations #claude-session:2025-11-11 #priority:high
   - safe_remove_entire_listing_tree, create_listing_group_subdivision, create_listing_group_unit_biddable
   - list_listing_groups_with_depth, next_id for temporary resource names
+  - ensure_campaign_label_exists, script_label = "DMA_SCRIPT_JVS"
+  - add_shopping_ad_group with 2 cent standard bids
 - [x] Review project setup and configuration #claude-session:2025-11-11 #priority:high
 - [x] Update .env with required API keys #claude-session:2025-11-11 #priority:high
 - [x] Initialize project with CC1 Boilerplate V2 #claude-session:2025-11-10

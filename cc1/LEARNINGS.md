@@ -30,6 +30,39 @@ _#claude-session:2025-11-11_
 **Wrong names**: `GOOGLE_DEVELOPER_TOKEN`, `GOOGLE_CLIENT_ID`, etc.
 _#claude-session:2025-11-11_
 
+### Google Ads tracking_url_template "Too short" Error
+**Problem**: Campaign creation fails with `string_length_error: TOO_SHORT` on tracking_url_template field
+**Solution**: Only set `tracking_url_template` field if it has a non-empty value
+```python
+# Don't do this:
+campaign.tracking_url_template = ""  # Causes TOO_SHORT error
+
+# Do this instead:
+if tracking_template:
+    campaign.tracking_url_template = tracking_template
+```
+**Root Cause**: Google Ads API rejects empty string for tracking_url_template, requires either valid URL or field not set
+_#claude-session:2025-11-11_
+
+### Column Index Mismatch Between Excel Sheets
+**Problem**: Script fails with `name 'COL_CATEGORY' is not defined` when processing exclusion sheet
+**Solution**: Use separate column index constants for different sheet structures
+- Inclusion sheet (toevoegen): 8 columns (A-H), status in column H
+- Exclusion sheet (uitsluiten): 6 columns (A-F), status in column F
+```python
+# Inclusion sheet columns
+COL_SHOP_NAME = 0
+COL_MAINCAT = 2
+COL_STATUS = 7  # Column H
+
+# Exclusion sheet columns
+COL_EX_SHOP_NAME = 0
+COL_EX_CAT_UITSLUITEN = 2
+COL_EX_STATUS = 5  # Column F
+```
+**Root Cause**: Different Excel sheets have different column structures
+_#claude-session:2025-11-11_
+
 ### Port Conflicts
 - FastAPI on 8001 (not 8000) to avoid conflicts
 - PostgreSQL on 5433 (not 5432) for same reason
@@ -101,6 +134,58 @@ _#claude-session:2025-11-11_
 - `test_google_ads_init.py` - Tests Google Ads client initialization and credentials
 - `test_campaign_processor.py` - Tests all components (client, Excel file, helper functions)
 **Benefits**: Catch configuration issues early, provide clear error messages
+_#claude-session:2025-11-11_
+
+### Row Grouping for Batch Campaign Creation
+**Pattern**: Group Excel rows by key fields before processing to create one campaign per unique group
+**Implementation**:
+```python
+from collections import defaultdict
+
+groups = defaultdict(list)
+for row in sheet.iter_rows(min_row=2):
+    # Group by combination of fields
+    group_key = (shop_name, maincat, custom_label_1)
+    groups[group_key].append(row_data)
+
+# Process each group
+for group_key, rows_in_group in groups.items():
+    # Create campaign once for entire group
+    campaign = create_campaign(group_key)
+    # Collect all category IDs from rows in this group
+    cat_ids = [r['cat_id'] for r in rows_in_group]
+    # Build listing tree with all categories
+    build_tree(campaign, cat_ids)
+```
+**Benefits**: Reduces API calls, creates logical campaign structure, handles multiple rows per campaign
+**Use Case**: When Excel has multiple rows that belong to same campaign (different categories for same shop/label combo)
+_#claude-session:2025-11-11_
+
+### Hierarchical Listing Tree Structure
+**Pattern**: Build multi-level listing tree subdivisions in Google Ads Shopping campaigns
+**Structure**:
+```
+Root SUBDIVISION
+├─ Shop Name (Custom Label 3) = "Shop A" [SUBDIVISION]
+│  ├─ Category (Custom Label 0) = "Cat1" [UNIT, POSITIVE, biddable]
+│  ├─ Category (Custom Label 0) = "Cat2" [UNIT, POSITIVE, biddable]
+│  └─ OTHERS (Custom Label 0) [UNIT, NEGATIVE]
+└─ OTHERS (Custom Label 3) [UNIT, NEGATIVE]
+```
+**Implementation**:
+- First mutate: Create root + first level subdivisions + OTHERS units
+- Second mutate: Create child units under subdivisions
+- Use temporary IDs for parent references before actual resource names returned
+**Benefits**: Precise targeting control, excludes unwanted combinations, maintains clean tree hierarchy
+_#claude-session:2025-11-11_
+
+### Helper Functions for Campaign Management
+**Functions added to google_ads_helpers.py**:
+- `ensure_campaign_label_exists(client, customer_id, label_name)` - Creates or retrieves campaign label
+- `script_label = "DMA_SCRIPT_JVS"` - Global constant for auto-labeling campaigns
+- `add_shopping_ad_group(client, customer_id, campaign_resource_name, ad_group_name, campaign_name)` - Creates ad group with 2 cent (20,000 micros) default bid
+- `labelCampaign(client, customer_id, campaign_name, campaign_resource_name)` - Adds label to campaign
+**Pattern**: Keep campaign management logic in helper file, import into main script
 _#claude-session:2025-11-11_
 
 ### No Build Tools Benefits

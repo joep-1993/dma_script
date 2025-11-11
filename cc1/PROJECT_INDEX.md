@@ -21,6 +21,7 @@ dma-shop-campaigns/
 ├── test_google_ads_init.py       # Test script for credentials verification
 ├── test_campaign_processor.py    # Test script for setup validation
 ├── toelichting.txt               # Requirements specification (Dutch)
+├── changes.txt                   # Updated requirements from session
 ├── example_functions.txt         # Reference functions for listing trees
 ├── CAMPAIGN_PROCESSOR_README.md  # Main script documentation
 ├── PYCHARM_SETUP.md              # PyCharm setup guide
@@ -102,17 +103,31 @@ python3 campaign_processor.py
 **What it does**:
 1. Loads Google Ads credentials from `.env`
 2. Reads Excel file with two sheets: `toevoegen` (inclusion) and `uitsluiten` (exclusion)
-3. For each row:
-   - Finds campaign by pattern: `PLA/{category}_{custom_label_1}`
-   - Retrieves ad group from campaign
-   - Rebuilds listing tree with Custom Label 3 targeting (shop name)
-   - Updates column F with TRUE (success) or FALSE (failed)
-4. Saves results back to Excel file
+3. **Inclusion logic (NEW - grouping approach)**:
+   - Groups rows by unique (shop_name, maincat, custom_label_1) combinations
+   - For each group:
+     - Creates campaign: `PLA/{maincat} {shop_name}_{custom_label_1}`
+     - Creates ad group: `PLA/{shop_name}_{custom_label_1}`
+     - Builds listing tree targeting shop (CL3) and all categories (CL0) from group
+   - Updates column H with TRUE/FALSE for all rows in group
+4. **Exclusion logic (original approach)**:
+   - Finds existing campaigns by pattern
+   - Rebuilds listing tree to exclude shop name (Custom Label 3)
+   - Updates column F with TRUE/FALSE per row
+5. Saves results back to Excel file
 
 **Key Features**:
 - Auto-detects OS (Windows/WSL) and uses correct file paths
-- Processes both inclusion (target shop) and exclusion (block shop) logic
+- Groups rows for efficient campaign creation (inclusion sheet)
+- Hierarchical listing tree: Shop (CL3) → Categories (CL0)
 - Comprehensive error handling and progress reporting
+
+**Configuration Constants**:
+- Merchant Center ID: `140784594`
+- Default budget: `10 EUR` per campaign (10,000,000 micros)
+- Country: `NL` (Netherlands)
+- Default bid: `2 cents` (20,000 micros) for ad groups
+- Campaign label: `DMA_SCRIPT_JVS`
 
 ## API Endpoints (Optional Web UI)
 - `GET /` - System status

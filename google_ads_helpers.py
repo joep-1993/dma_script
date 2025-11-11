@@ -165,3 +165,265 @@ def create_listing_group_unit_biddable(
     if targeting_negative:
         criterion.negative = True
     return operation
+
+
+def add_standard_shopping_campaign(
+    client, customer_id, merchant_center_account_id, campaign_name, budget_name,
+    tracking_template, country, shopid, shopname, label, budget, final_url_suffix=None
+):
+
+    campaign_service = client.get_service("CampaignService")
+    google_ads_service = client.get_service("GoogleAdsService")
+
+    # Check if campaign already exists and if it is removed
+    query = f""" 
+    SELECT campaign.id, campaign.resource_name, campaign.status 
+    FROM campaign 
+    WHERE campaign.name LIKE '%shop_id:{shopid}]%' 
+    AND campaign.name LIKE '%shop:{shopname}%' 
+    AND campaign.name LIKE '%label:{label}%' 
+    """
+    response = google_ads_service.search(customer_id=customer_id, query=query)
+    campaign_exists_not_removed = None
+    campaign_removed_found = False
+
+    for row in response:
+        if row.campaign.status == client.enums.CampaignStatusEnum.REMOVED:
+            #print(f"Campaign '{campaign_name}' exists but is removed. Will create a new one...")
+            campaign_removed_found = True
+        else:
+            print(f"                Campaign '{campaign_name}' already exists with ID {row.campaign.id}")
+            campaign_exists_not_removed = row.campaign.resource_name
+            break
+
+    if campaign_exists_not_removed:
+        return campaign_exists_not_removed
+
+    # Create a budget that is NOT shared by multiple campaigns
+    campaign_budget_service = client.get_service("CampaignBudgetService")
+    campaign_budget_operation = client.get_type("CampaignBudgetOperation")
+    campaign_budget = campaign_budget_operation.create
+    campaign_budget.name = budget_name
+    campaign_budget.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
+    campaign_budget.amount_micros = budget
+    #campaign_budget.amount_micros = 5000000
+    campaign_budget.explicitly_shared = False
+
+    try:
+        campaign_budget_response = campaign_budget_service.mutate_campaign_budgets(
+            customer_id=customer_id, operations=[campaign_budget_operation]
+        )
+    except GoogleAdsException as ex:
+        #handle_googleads_exception(ex)
+        return None
+
+    # Create standard shopping campaign
+    campaign_operation = client.get_type("CampaignOperation")
+    campaign = campaign_operation.create
+    campaign.name = campaign_name
+    campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SHOPPING
+    campaign.shopping_setting.merchant_id = merchant_center_account_id
+    campaign.shopping_setting.campaign_priority = 0
+    campaign.shopping_setting.enable_local = True
+
+    # Only set tracking_url_template if it's provided and not empty
+    if tracking_template:
+        campaign.tracking_url_template = tracking_template
+
+    campaign.contains_eu_political_advertising = (
+        client.enums.EuPoliticalAdvertisingStatusEnum.DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING
+    )
+
+    if final_url_suffix:
+        campaign.final_url_suffix = final_url_suffix
+    campaign.status = client.enums.CampaignStatusEnum.PAUSED
+    campaign.manual_cpc.enhanced_cpc_enabled = False
+    campaign.campaign_budget = campaign_budget_response.results[0].resource_name
+    time.sleep(1)
+    try:
+        campaign_response = campaign_service.mutate_campaigns(
+            customer_id=customer_id, operations=[campaign_operation]
+        )
+    except GoogleAdsException as ex:
+        print(f"Failed to create campaign '{campaign_name}': {ex}")
+        response_retry = google_ads_service.search(customer_id=customer_id, query=query)
+        for row in response_retry:
+            if row.campaign.status != client.enums.CampaignStatusEnum.REMOVED:
+                print(f"Campaign '{campaign_name}' gevonden na fout bij aanmaken.")
+                return row.campaign.resource_name
+        print(f"Kan campagne '{campaign_name}' niet aanmaken en geen actieve campagne gevonden.")
+        return None
+
+    campaign_resource_name = campaign_response.results[0].resource_name
+
+    # Add location targeting
+    campaign_id = campaign_resource_name.split("/")[-1]
+    campaign_criterion_service = client.get_service("CampaignCriterionService")
+    operations = [
+        create_location_op(client, customer_id, campaign_id, country),
+    ]
+    try:
+        campaign_criterion_service.mutate_campaign_criteria(
+            customer_id=customer_id, operations=operations
+        )
+    except GoogleAdsException as ex:
+        #handle_googleads_exception(ex)
+        print(f'error: {ex}')
+
+    # Voeg label 'GSD_SCRIPT' toe aan campagne
+    campaign_label_service = client.get_service("CampaignLabelService")
+    label_resource_name = ensure_campaign_label_exists(client, customer_id, script_label)
+    if label_resource_name:
+        campaign_label_operation = client.get_type("CampaignLabelOperation")
+        campaign_label = campaign_label_operation.create
+        campaign_label.campaign = campaign_resource_name
+        campaign_label.label = label_resource_name
+        time.sleep(2)
+
+        try:
+            campaign_label_service.mutate_campaign_labels(
+                customer_id=customer_id, operations=[campaign_label_operation]
+            )
+            #print(f"                Label '{script_label}' toegevoegd aan campagne '{campaign_name}'.")
+        except GoogleAdsException as ex:
+            print(f'error: {ex}')
+            #handle_googleads_exception(ex)
+    else:
+        print(f"Kon label '{script_label}' niet aanmaken of ophalen.")
+
+    print(f"                Standard shopping campaign created (and labeled): {campaign_name}")
+    return campaign_resource_name
+
+def labelCampaign(client, customer_id, campaign_name, campaign_resource_name):
+
+    # Voeg label 'GSD_SCRIPT' toe aan campagne
+    campaign_label_service = client.get_service("CampaignLabelService")
+    label_resource_name = ensure_campaign_label_exists(client, customer_id, script_label)
+    if label_resource_name:
+        campaign_label_operation = client.get_type("CampaignLabelOperation")
+        campaign_label = campaign_label_operation.create
+        campaign_label.campaign = campaign_resource_name
+        campaign_label.label = label_resource_name
+        time.sleep(2)
+
+        try:
+            campaign_label_service.mutate_campaign_labels(
+                customer_id=customer_id, operations=[campaign_label_operation]
+            )
+            print(f"                Label '{script_label}' toegevoegd aan campagne '{campaign_name}'.")
+        except GoogleAdsException as ex:
+            #handle_googleads_exception(ex)
+            print(f' error: {ex}')
+    else:
+        print(f"Kon label '{script_label}' niet aanmaken of ophalen.")
+
+def create_location_op(client, customer_id, campaign_id, country):
+    campaign_service = client.get_service("CampaignService")
+    geo_target_constant_service = client.get_service("GeoTargetConstantService")
+
+    if country == "NL":
+        location_id = "2528"
+    elif country == "BE":
+        location_id = "2056"
+    elif country == "DE":
+        location_id = "2276"
+
+    # Create the campaign criterion.
+    campaign_criterion_operation = client.get_type("CampaignCriterionOperation")
+    campaign_criterion = campaign_criterion_operation.create
+    campaign_criterion.campaign = campaign_service.campaign_path(
+        customer_id, campaign_id
+    )
+
+    # Besides using location_id, you can also search by location names from
+    # GeoTargetConstantService.suggest_geo_target_constants() and directly
+    # apply GeoTargetConstant.resource_name here. An example can be found
+    # in get_geo_target_constant_by_names.py.
+    campaign_criterion.location.geo_target_constant = (
+        geo_target_constant_service.geo_target_constant_path(location_id)
+    )
+
+    return campaign_criterion_operation
+
+def add_shopping_ad_group(client, customer_id, campaign_resource_name, ad_group_name, campaign_name):
+
+    # Standard bid: 2 cents = 0.02 EUR = 20,000 micros
+    adgroup_bid = 20000
+
+    ad_group_service = client.get_service("AdGroupService")
+    google_ads_service = client.get_service("GoogleAdsService")
+
+    # Normalize ad group name
+    if ad_group_name == "no ean":
+        ad_group_name = "no_ean"
+    elif ad_group_name == "no data":
+        ad_group_name = "no_data"
+
+    # Check if any *non-removed* ad group exists in the campaign
+    query = f"""
+        SELECT ad_group.id, ad_group.resource_name
+        FROM ad_group
+        WHERE ad_group.campaign = '{campaign_resource_name}'
+        AND ad_group.status != 'REMOVED'
+        LIMIT 1
+    """
+    response = google_ads_service.search(customer_id=customer_id, query=query)
+
+    for row in response:
+        print(f"                        An ad group already exists in the campaign '{campaign_name}' (ID: {row.ad_group.id})")
+        return row.ad_group.resource_name, False
+
+    # No (active) ad group exists — create one
+    ad_group_operation = client.get_type("AdGroupOperation")
+    ad_group = ad_group_operation.create
+    ad_group.campaign = campaign_resource_name
+    ad_group.name = ad_group_name
+
+    ad_group.cpc_bid_micros = adgroup_bid
+    #ad_group.cpc_bid_micros = 200000  # Adjust bid if needed
+    ad_group.status = client.enums.AdGroupStatusEnum.ENABLED
+
+    try:
+        ad_group_response = ad_group_service.mutate_ad_groups(
+            customer_id=customer_id, operations=[ad_group_operation]
+        )
+    except GoogleAdsException as ex:
+        print(f"                        Failed to create ad group '{ad_group_name}'. Checking again...")
+        return add_shopping_ad_group(client, customer_id, campaign_resource_name, ad_group_name, campaign_name)
+
+    ad_group_resource_name = ad_group_response.results[0].resource_name
+    print(f"                        Ad group created with name: {ad_group_name}")
+    return ad_group_resource_name, True
+
+
+def ensure_campaign_label_exists(client, customer_id, label_name):
+    """Zorgt ervoor dat het label 'label_name' bestaat, en retourneert de resource_name."""
+    google_ads_service = client.get_service("GoogleAdsService")
+    label_service = client.get_service("LabelService")
+
+    query = f"""
+    SELECT label.resource_name, label.name
+    FROM label
+    WHERE label.name = '{label_name}'
+    """
+    response = google_ads_service.search(customer_id=customer_id, query=query)
+
+    for row in response:
+        return row.label.resource_name
+
+    # Label bestaat nog niet, dus aanmaken
+    label_operation = client.get_type("LabelOperation")
+    label = label_operation.create
+    label.name = label_name
+
+    try:
+        label_response = label_service.mutate_labels(
+            customer_id=customer_id, operations=[label_operation]
+        )
+        return label_response.results[0].resource_name
+    except GoogleAdsException as ex:
+        #handle_googleads_exception(ex)
+        print(f'error: {ex}')
+        return None
+
+script_label = "DMA_SCRIPT_JVS"

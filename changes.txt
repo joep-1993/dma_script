@@ -1,0 +1,17 @@
+Customer id: 3800751597
+
+Input Excel ('c:/Users/JoepvanSchagen/Downloads/dma_script_ivor.xlsx') should be read. It has 2 sheets, which should be 2 different functions. One to include and one to exclude items. First the inclusion. 
+
+Retrieve sheet 'toevoegen'. These are the column headers:
+1. Shop name
+2. Shop ID
+3. maincat
+4. maincat_id
+5. cat_toevoegen
+6. Diepste cat iD
+7. custom label 1
+
+For each distinct combination of Shop name, maincat and custom label 1 (for example "Hbm-machines.com|NL" + "Auto's" + "a") a campaign should be created, which can be done by using the function "add_standard_shopping_campaign" in google_ads_helpers.py. The name of the campaign should be 'PLA/*Maincat* *Shop name*_*custom label 1*'. Then, an ad group should be created with name 'PLA/*Shop name*_*custom label 1*'. Then, a listing tree should be added to the ad group, targeting Shop name as custom value 3, then subdividing and targeting all values of "Diepste cat iD" as custom value 0. Excluding everythin else. 
+If the inclusion is successfull, the value of that specific line in Excel column H (8th column) should be set to TRUE. If not successfull, set to FALSE.
+
+All helper functions can be found in google_ads_helpers.py.
