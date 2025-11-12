@@ -20,6 +20,9 @@ dma-shop-campaigns/
 ├── google_ads_helpers.py         # Helper functions for listing tree operations
 ├── test_google_ads_init.py       # Test script for credentials verification
 ├── test_campaign_processor.py    # Test script for setup validation
+├── check_adgroup_structure.py    # Diagnostic: Check ad group tree structure
+├── test_exclusion_fix.py         # Diagnostic: Test exclusion logic on specific ad group
+├── EXCLUSION_LOGIC_FIX_SUMMARY.md # Documentation: Exclusion logic fix details
 ├── toelichting.txt               # Requirements specification (Dutch)
 ├── changes.txt                   # Updated requirements from session
 ├── example_functions.txt         # Reference functions for listing trees
@@ -110,12 +113,16 @@ python3 campaign_processor.py
      - Looks up bid strategy from MCC account (3011145605) based on custom_label_1
      - Creates campaign: `PLA/{maincat} {shop_name}_{custom_label_1}` with budget from Excel
      - Applies portfolio bid strategy from MCC (if found, else manual CPC)
-     - Creates ad group: `PLA/{shop_name}_{custom_label_1}`
-     - Builds listing tree: maincat_id (CL0) → shop_name (CL3) with 1 cent bid
+     - Creates MULTIPLE ad groups (one per shop): `PLA/{shop_name}_{custom_label_1}`
+     - Builds listing tree per ad group: maincat_id (CL0) → shop_name (CL3) with 1 cent bid
+     - Enables concurrent processing of multiple shops in same campaign
    - Updates column G with TRUE/FALSE for all rows in group
 4. **Exclusion logic** (processes rows with empty status in column F):
    - Finds existing campaigns by pattern
    - Rebuilds listing tree to exclude shop name (Custom Label 3)
+   - **PRESERVES existing tree structures**: CL0 and CL1 subdivisions/units are maintained
+   - Converts positive CL0 units to subdivisions when adding CL3 exclusions
+   - Final structure: ROOT → CL1 → CL0 → CL3 (hierarchical, all existing targeting preserved)
    - Updates column F with TRUE/FALSE per row
 5. Saves results back to Excel file
 

@@ -26,6 +26,24 @@ _What are we building and why?_
 - [ ] Monitoring
 
 ## Technical Debt
+- [ ] Optimize listing tree operations with bulk mutations #priority:medium
+  - Current implementation uses separate mutate operations for each level
+  - Could combine more operations into single mutate where possible
+  - Reduce API calls and improve performance for large trees
+  - Consider batching multiple ad group tree operations
+  _#claude-session:2025-11-12_
+- [ ] Better handling of complex tree hierarchies #priority:medium
+  - Current code assumes max 3 levels (CL1 → CL0 → CL3)
+  - Add support for arbitrary depth hierarchies
+  - Implement recursive tree traversal for collection and rebuilding
+  - Add tree structure validation before mutations
+  _#claude-session:2025-11-12_
+- [ ] Add validation tools for tree structure integrity #priority:low
+  - Create diagnostic script to validate tree structures
+  - Check for orphaned nodes, missing OTHERS cases, invalid siblings
+  - Add pre-flight checks before mutate operations
+  - Helpful for debugging tree issues without API calls
+  _#claude-session:2025-11-12_
 - [ ] Validate Excel column structure before processing #priority:medium
   - Check inclusion sheet has 8 columns (A-H) before processing
   - Check exclusion sheet has 6 columns (A-F) before processing

@@ -368,18 +368,19 @@ def add_shopping_ad_group(client, customer_id, campaign_resource_name, ad_group_
     elif ad_group_name == "no data":
         ad_group_name = "no_data"
 
-    # Check if any *non-removed* ad group exists in the campaign
+    # Check if an ad group with this specific name exists in the campaign
     query = f"""
-        SELECT ad_group.id, ad_group.resource_name
+        SELECT ad_group.id, ad_group.resource_name, ad_group.name
         FROM ad_group
         WHERE ad_group.campaign = '{campaign_resource_name}'
+        AND ad_group.name = '{ad_group_name}'
         AND ad_group.status != 'REMOVED'
         LIMIT 1
     """
     response = google_ads_service.search(customer_id=customer_id, query=query)
 
     for row in response:
-        print(f"                        An ad group already exists in the campaign '{campaign_name}' (ID: {row.ad_group.id})")
+        print(f"                        Ad group '{ad_group_name}' already exists (ID: {row.ad_group.id})")
         return row.ad_group.resource_name, False
 
     # No (active) ad group exists — create one

@@ -14,6 +14,23 @@ _Tasks currently being worked on (max 1-2 items)_
 ## Completed
 _Recently finished tasks_
 
+- [x] Fix concurrent modification in ad group creation #claude-session:2025-11-12 #priority:critical
+  - Fixed add_shopping_ad_group() to check for SPECIFIC ad group name instead of ANY ad group
+  - Changed query from checking campaign existence to checking (campaign + ad_group_name)
+  - Prevents multiple shops from getting same ad group ID when processing same campaign
+  - Added 1 second delay after listing tree creation to avoid race conditions
+- [x] Fix exclusion logic to preserve hierarchical tree structures #claude-session:2025-11-12 #priority:critical
+  - Rewrote rebuild_tree_with_custom_label_3_exclusion() to preserve CL0 and CL1 structures
+  - Collects BOTH subdivision nodes (hierarchy) and unit nodes (targeting)
+  - Rebuilds hierarchy level by level following pattern from example_functions.txt
+  - Converts positive CL0 units to subdivisions when adding CL3 exclusions
+  - Final structure: ROOT → CL1 → CL0 → CL3 (preserves all existing targeting)
+- [x] Implement multiple ad groups per campaign structure #claude-session:2025-11-12 #priority:high
+  - Campaigns now contain multiple ad groups (one per shop)
+  - Campaign pattern: PLA/{maincat} {shop_name}_{custom_label_1}
+  - Ad group pattern: PLA/{shop_name}_{custom_label_1}
+  - Each ad group has separate listing tree for its shop
+  - Enables proper concurrent processing of multiple shops in same campaign
 - [x] Implement resumable processing logic #claude-session:2025-11-12 #priority:medium
   - Script now skips rows with existing status values (TRUE/FALSE)
   - Enables continuing from where script left off after failures

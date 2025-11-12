@@ -420,9 +420,11 @@ def rebuild_tree_with_custom_label_3_exclusion(
     """
     Rebuild listing tree to EXCLUDE a specific shop name via custom label 3.
 
-    PRESERVES existing tree structure (subdivisions, exclusions, etc.) and adds
-    shop exclusion on top of it, similar to rebuild_tree_with_label_and_item_ids
-    in example_functions.txt.
+    Following the pattern from rebuild_tree_with_label_and_item_ids in example_functions.txt:
+    1. Read existing tree structure
+    2. Collect ALL custom label structures (CL0, CL1, etc.) EXCEPT CL3
+    3. Rebuild tree preserving those structures
+    4. Add CL3 exclusion
 
     Args:
         client: Google Ads client
@@ -456,69 +458,76 @@ def rebuild_tree_with_custom_label_3_exclusion(
         results = list(ga_service.search(customer_id=customer_id, query=query))
     except Exception as e:
         print(f"   ❌ Error reading existing tree: {e}")
-        # If can't read tree, create simple exclusion tree
-        _create_simple_exclusion_tree(client, customer_id, ad_group_id, shop_name, default_bid_micros)
         return
 
-    if not results:
-        print("   ℹ️ No existing tree found. Creating new tree with shop exclusion.")
-        _create_simple_exclusion_tree(client, customer_id, ad_group_id, shop_name, default_bid_micros)
-        return
-
-    # Step 2: Analyze existing tree structure
-    tree_map = {}
-    for row in results:
-        criterion = row.ad_group_criterion
-        res_name = criterion.resource_name
-        lg = criterion.listing_group
-        parent = lg.parent_ad_group_criterion
-
-        tree_map[res_name] = {
-            'resource_name': res_name,
-            'type': lg.type_.name,
-            'parent': parent if parent else None,
-            'case_value': lg.case_value,
-            'negative': criterion.negative,
-            'bid_micros': criterion.cpc_bid_micros,
-        }
-
-    # Step 3: Collect ALL custom label structures to preserve (except CL3)
+    # Step 2: Collect ALL custom label structures to preserve (EXCEPT CL3/INDEX2)
     custom_label_structures = []
-    for res_name, node in tree_map.items():
-        case_val = node['case_value']
-        if (case_val and
-            case_val._pb.WhichOneof("dimension") == "product_custom_attribute"):
-            index_name = case_val.product_custom_attribute.index.name
-            value = case_val.product_custom_attribute.value
+    custom_label_subdivisions = []
 
-            # Skip Custom Label 3 (we're replacing it) and OTHERS cases
-            if index_name == 'INDEX2':  # INDEX2 = Custom Label 3
-                continue
-            if not value or value == '':  # OTHERS case
-                continue
+    if results:
+        for row in results:
+            criterion = row.ad_group_criterion
+            lg = criterion.listing_group
+            case_val = lg.case_value
 
-            # Preserve all other custom label structures
-            if node['type'] == 'UNIT':
-                custom_label_structures.append({
-                    'index': index_name,
-                    'value': value,
-                    'negative': node['negative'],
-                    'bid_micros': node['bid_micros']
-                })
+            if (case_val and
+                case_val._pb.WhichOneof("dimension") == "product_custom_attribute"):
+                index_name = case_val.product_custom_attribute.index.name
+                value = case_val.product_custom_attribute.value
+
+                # Skip Custom Label 3 (INDEX2) - we're replacing it
+                if index_name == 'INDEX2':
+                    continue
+
+                # Skip OTHERS cases (empty value)
+                if not value or value == '':
+                    continue
+
+                # Collect SUBDIVISION nodes separately
+                if lg.type_.name == 'SUBDIVISION':
+                    custom_label_subdivisions.append({
+                        'index': index_name,
+                        'value': value,
+                        'parent': lg.parent_ad_group_criterion if lg.parent_ad_group_criterion else None
+                    })
+
+                # Preserve all other custom label UNIT nodes (both negative and positive)
+                if lg.type_.name == 'UNIT':
+                    custom_label_structures.append({
+                        'index': index_name,
+                        'value': value,
+                        'negative': criterion.negative,
+                        'bid_micros': criterion.cpc_bid_micros
+                    })
+
+    if custom_label_subdivisions:
+        print(f"      ℹ️ Found {len(custom_label_subdivisions)} existing subdivision(s):")
+        for struct in custom_label_subdivisions:
+            print(f"         - {struct['index']}: '{struct['value']}' (SUBDIVISION)")
 
     if custom_label_structures:
-        print(f"      ℹ️ Preserving {len(custom_label_structures)} existing custom label structure(s):")
+        print(f"      ℹ️ Preserving {len(custom_label_structures)} existing UNIT structure(s):")
         for struct in custom_label_structures:
             neg_str = "[NEGATIVE]" if struct['negative'] else "[POSITIVE]"
             print(f"         - {struct['index']}: '{struct['value']}' {neg_str}")
 
-    # Step 4: Rebuild tree with shop exclusion + preserved structures
+    # Step 3: Remove old tree
     safe_remove_entire_listing_tree(client, customer_id, str(ad_group_id))
     time.sleep(0.5)
 
     agc_service = client.get_service("AdGroupCriterionService")
 
-    # MUTATE 1: Create root + CL3 OTHERS + preserved structures
+    # Step 4: Rebuild tree hierarchically with preserved structures + CL3 exclusion
+    # Use SUBDIVISIONS to determine hierarchy, not UNIT nodes
+
+    # Group subdivisions by INDEX (dimension type)
+    cl0_subdivisions = [s for s in custom_label_subdivisions if s['index'] == 'INDEX0']
+    cl1_subdivisions = [s for s in custom_label_subdivisions if s['index'] == 'INDEX1']
+
+    # Group UNIT structures by INDEX
+    cl0_units = [s for s in custom_label_structures if s['index'] == 'INDEX0']
+    cl1_units = [s for s in custom_label_structures if s['index'] == 'INDEX1']
+
     ops1 = []
 
     # 1. ROOT SUBDIVISION
@@ -532,139 +541,232 @@ def rebuild_tree_with_custom_label_3_exclusion(
     root_tmp = root_op.create.resource_name
     ops1.append(root_op)
 
-    # 2. Custom Label 3 OTHERS (positive - shows all other shops)
-    dim_cl3_others = client.get_type("ListingDimensionInfo")
-    dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
+    # Determine hierarchy based on SUBDIVISIONS (not units)
+    current_parent_tmp = root_tmp
+    deepest_subdivision_tmp = root_tmp
+    result_index_map = [0]  # Track which result index is which subdivision
 
-    ops1.append(
-        create_listing_group_unit_biddable(
+    # If CL0 or CL1 subdivisions exist, rebuild them
+    if cl0_subdivisions:
+        # Build CL0 level
+        cl0_subdiv = cl0_subdivisions[0]
+
+        # Create CL0 subdivision
+        dim_cl0 = client.get_type("ListingDimensionInfo")
+        dim_cl0.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0
+        dim_cl0.product_custom_attribute.value = cl0_subdiv['value']
+
+        cl0_subdivision_op = create_listing_group_subdivision(
             client=client,
             customer_id=customer_id,
             ad_group_id=str(ad_group_id),
-            parent_ad_group_criterion_resource_name=root_tmp,
-            listing_dimension_info=dim_cl3_others,
-            targeting_negative=False,
-            cpc_bid_micros=default_bid_micros
+            parent_ad_group_criterion_resource_name=current_parent_tmp,
+            listing_dimension_info=dim_cl0
         )
-    )
+        cl0_subdivision_tmp = cl0_subdivision_op.create.resource_name
+        ops1.append(cl0_subdivision_op)
+        result_index_map.append(len(ops1) - 1)  # Track CL0 subdivision index
 
-    # 3. Preserve existing custom label structures
-    for struct in custom_label_structures:
-        dim_preserved = client.get_type("ListingDimensionInfo")
-        # Map index name back to enum
-        if struct['index'] == 'INDEX0':
-            dim_preserved.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0
-        elif struct['index'] == 'INDEX1':
-            dim_preserved.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX1
-        elif struct['index'] == 'INDEX3':
-            dim_preserved.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
-        elif struct['index'] == 'INDEX4':
-            dim_preserved.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX4
-
-        dim_preserved.product_custom_attribute.value = struct['value']
-
+        # Add CL0 OTHERS (negative)
+        dim_cl0_others = client.get_type("ListingDimensionInfo")
+        dim_cl0_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0
         ops1.append(
             create_listing_group_unit_biddable(
                 client=client,
                 customer_id=customer_id,
                 ad_group_id=str(ad_group_id),
-                parent_ad_group_criterion_resource_name=root_tmp,
-                listing_dimension_info=dim_preserved,
-                targeting_negative=struct['negative'],
-                cpc_bid_micros=struct['bid_micros']
+                parent_ad_group_criterion_resource_name=current_parent_tmp,
+                listing_dimension_info=dim_cl0_others,
+                targeting_negative=True,
+                cpc_bid_micros=None
+            )
+        )
+
+        current_parent_tmp = cl0_subdivision_tmp
+        deepest_subdivision_tmp = cl0_subdivision_tmp
+
+    if cl1_subdivisions:
+        # Build CL1 level under current parent
+        cl1_subdiv = cl1_subdivisions[0]
+
+        # Create CL1 subdivision
+        dim_cl1 = client.get_type("ListingDimensionInfo")
+        dim_cl1.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX1
+        dim_cl1.product_custom_attribute.value = cl1_subdiv['value']
+
+        cl1_subdivision_op = create_listing_group_subdivision(
+            client=client,
+            customer_id=customer_id,
+            ad_group_id=str(ad_group_id),
+            parent_ad_group_criterion_resource_name=current_parent_tmp,
+            listing_dimension_info=dim_cl1
+        )
+        cl1_subdivision_tmp = cl1_subdivision_op.create.resource_name
+        ops1.append(cl1_subdivision_op)
+        result_index_map.append(len(ops1) - 1)  # Track CL1 subdivision index
+
+        # Add CL1 OTHERS (negative)
+        dim_cl1_others = client.get_type("ListingDimensionInfo")
+        dim_cl1_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX1
+        ops1.append(
+            create_listing_group_unit_biddable(
+                client=client,
+                customer_id=customer_id,
+                ad_group_id=str(ad_group_id),
+                parent_ad_group_criterion_resource_name=current_parent_tmp,
+                listing_dimension_info=dim_cl1_others,
+                targeting_negative=True,
+                cpc_bid_micros=None
+            )
+        )
+
+        current_parent_tmp = cl1_subdivision_tmp
+        deepest_subdivision_tmp = cl1_subdivision_tmp
+
+    # If there are CL0 units under the deepest subdivision, we need to convert them to subdivisions
+    # and nest CL3 under them (following pattern from rebuild_tree_with_label_and_item_ids)
+    if cl0_units:
+        # For each CL0 unit, create as subdivision and add CL3 under it
+        for unit in cl0_units:
+            # Create CL0 subdivision (instead of unit)
+            dim_cl0_subdiv = client.get_type("ListingDimensionInfo")
+            dim_cl0_subdiv.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0
+            dim_cl0_subdiv.product_custom_attribute.value = unit['value']
+
+            cl0_unit_subdivision_op = create_listing_group_subdivision(
+                client=client,
+                customer_id=customer_id,
+                ad_group_id=str(ad_group_id),
+                parent_ad_group_criterion_resource_name=deepest_subdivision_tmp,
+                listing_dimension_info=dim_cl0_subdiv
+            )
+            cl0_unit_subdivision_tmp = cl0_unit_subdivision_op.create.resource_name
+            ops1.append(cl0_unit_subdivision_op)
+
+            # Add CL3 OTHERS under this CL0 subdivision
+            dim_cl3_others = client.get_type("ListingDimensionInfo")
+            dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
+            ops1.append(
+                create_listing_group_unit_biddable(
+                    client=client,
+                    customer_id=customer_id,
+                    ad_group_id=str(ad_group_id),
+                    parent_ad_group_criterion_resource_name=cl0_unit_subdivision_tmp,
+                    listing_dimension_info=dim_cl3_others,
+                    targeting_negative=False,
+                    cpc_bid_micros=unit['bid_micros']  # Use the original bid from CL0 unit
+                )
+            )
+
+        # Add CL0 OTHERS (negative) under deepest subdivision
+        dim_cl0_others = client.get_type("ListingDimensionInfo")
+        dim_cl0_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0
+        ops1.append(
+            create_listing_group_unit_biddable(
+                client=client,
+                customer_id=customer_id,
+                ad_group_id=str(ad_group_id),
+                parent_ad_group_criterion_resource_name=deepest_subdivision_tmp,
+                listing_dimension_info=dim_cl0_others,
+                targeting_negative=True,
+                cpc_bid_micros=None
+            )
+        )
+    else:
+        # No CL0 units - just add CL3 directly under deepest subdivision
+        dim_cl3_others = client.get_type("ListingDimensionInfo")
+        dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
+        ops1.append(
+            create_listing_group_unit_biddable(
+                client=client,
+                customer_id=customer_id,
+                ad_group_id=str(ad_group_id),
+                parent_ad_group_criterion_resource_name=deepest_subdivision_tmp,
+                listing_dimension_info=dim_cl3_others,
+                targeting_negative=False,
+                cpc_bid_micros=default_bid_micros
             )
         )
 
     # Execute first mutate
-    resp1 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
-    root_actual = resp1.results[0].resource_name
+    try:
+        resp1 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
+    except Exception as e:
+        print(f"   ❌ Error rebuilding tree: {e}")
+        return
+
     time.sleep(0.5)
 
-    # MUTATE 2: Add shop exclusion
+    # MUTATE 2: Add shop exclusion under each CL0 subdivision (if they exist)
     ops2 = []
 
-    dim_shop = client.get_type("ListingDimensionInfo")
-    dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
-    dim_shop.product_custom_attribute.value = shop_name
+    if cl0_units:
+        # We created CL0 subdivisions - need to find their actual resource names and add exclusion to each
+        # Calculate the index of the first CL0 subdivision in results
+        base_index = 1  # Start after ROOT
+        if cl0_subdivisions:
+            base_index += 2  # CL0 subdivision + CL0 OTHERS
+        if cl1_subdivisions:
+            base_index += 2  # CL1 subdivision + CL1 OTHERS
 
-    ops2.append(
-        create_listing_group_unit_biddable(
-            client=client,
-            customer_id=customer_id,
-            ad_group_id=str(ad_group_id),
-            parent_ad_group_criterion_resource_name=root_actual,
-            listing_dimension_info=dim_shop,
-            targeting_negative=True,
-            cpc_bid_micros=None
+        # Each CL0 unit became: CL0 subdivision + CL3 OTHERS
+        # So CL0 subdivisions are at: base_index, base_index+2, base_index+4, ...
+        for i, unit in enumerate(cl0_units):
+            cl0_subdivision_actual = resp1.results[base_index + (i * 2)].resource_name
+
+            dim_shop = client.get_type("ListingDimensionInfo")
+            dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
+            dim_shop.product_custom_attribute.value = shop_name
+            ops2.append(
+                create_listing_group_unit_biddable(
+                    client=client,
+                    customer_id=customer_id,
+                    ad_group_id=str(ad_group_id),
+                    parent_ad_group_criterion_resource_name=cl0_subdivision_actual,
+                    listing_dimension_info=dim_shop,
+                    targeting_negative=True,
+                    cpc_bid_micros=None
+                )
+            )
+    else:
+        # No CL0 units - add exclusion under the deepest subdivision (CL1 or ROOT)
+        if cl1_subdivisions:
+            if cl0_subdivisions:
+                deepest_subdivision_actual = resp1.results[3].resource_name  # ROOT, CL0 subdivision, CL0 OTHERS, CL1 subdivision
+            else:
+                deepest_subdivision_actual = resp1.results[1].resource_name  # ROOT, CL1 subdivision
+        elif cl0_subdivisions:
+            deepest_subdivision_actual = resp1.results[1].resource_name  # ROOT, CL0 subdivision
+        else:
+            deepest_subdivision_actual = resp1.results[0].resource_name  # ROOT
+
+        dim_shop = client.get_type("ListingDimensionInfo")
+        dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
+        dim_shop.product_custom_attribute.value = shop_name
+        ops2.append(
+            create_listing_group_unit_biddable(
+                client=client,
+                customer_id=customer_id,
+                ad_group_id=str(ad_group_id),
+                parent_ad_group_criterion_resource_name=deepest_subdivision_actual,
+                listing_dimension_info=dim_shop,
+                targeting_negative=True,
+                cpc_bid_micros=None
+            )
         )
-    )
 
-    agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
-    print(f"   ✅ Tree rebuilt: EXCLUDING shop '{shop_name}' (preserved {len(custom_label_structures)} existing structures)")
+    try:
+        agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
+    except Exception as e:
+        print(f"   ❌ Error adding shop exclusion: {e}")
+        return
 
+    preserved_count = len(custom_label_structures)
+    if preserved_count > 0:
+        print(f"   ✅ Tree rebuilt: EXCLUDING shop '{shop_name}', preserved {preserved_count} existing structure(s)")
+    else:
+        print(f"   ✅ Tree rebuilt: EXCLUDING shop '{shop_name}', showing all others.")
 
-def _create_simple_exclusion_tree(
-    client: GoogleAdsClient,
-    customer_id: str,
-    ad_group_id: int,
-    shop_name: str,
-    default_bid_micros: int
-):
-    """Helper to create simple shop exclusion tree when no existing tree found."""
-    safe_remove_entire_listing_tree(client, customer_id, str(ad_group_id))
-    time.sleep(0.5)
-
-    agc_service = client.get_service("AdGroupCriterionService")
-    ops1 = []
-
-    root_op = create_listing_group_subdivision(
-        client=client,
-        customer_id=customer_id,
-        ad_group_id=str(ad_group_id),
-        parent_ad_group_criterion_resource_name=None,
-        listing_dimension_info=None
-    )
-    root_tmp = root_op.create.resource_name
-    ops1.append(root_op)
-
-    dim_cl3_others = client.get_type("ListingDimensionInfo")
-    dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
-
-    ops1.append(
-        create_listing_group_unit_biddable(
-            client=client,
-            customer_id=customer_id,
-            ad_group_id=str(ad_group_id),
-            parent_ad_group_criterion_resource_name=root_tmp,
-            listing_dimension_info=dim_cl3_others,
-            targeting_negative=False,
-            cpc_bid_micros=default_bid_micros
-        )
-    )
-
-    resp1 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
-    root_actual = resp1.results[0].resource_name
-    time.sleep(0.5)
-
-    ops2 = []
-    dim_shop = client.get_type("ListingDimensionInfo")
-    dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
-    dim_shop.product_custom_attribute.value = shop_name
-
-    ops2.append(
-        create_listing_group_unit_biddable(
-            client=client,
-            customer_id=customer_id,
-            ad_group_id=str(ad_group_id),
-            parent_ad_group_criterion_resource_name=root_actual,
-            listing_dimension_info=dim_shop,
-            targeting_negative=True,
-            cpc_bid_micros=None
-        )
-    )
-
-    agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
-    print(f"   ✅ Simple exclusion tree created for shop '{shop_name}'")
 
 def build_listing_tree_for_inclusion(
     client: GoogleAdsClient,
@@ -1017,6 +1119,9 @@ def process_inclusion_sheet(
 
                     print(f"      ✅ Listing tree created for {shop_name}")
                     shops_processed_successfully.append(shop_name)
+
+                    # Small delay to avoid concurrent modification issues
+                    time.sleep(1)
 
                 except Exception as e:
                     print(f"      ❌ Failed to process shop {shop_name}: {e}")
