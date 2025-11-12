@@ -45,7 +45,15 @@ except ImportError:
 # ============================================================================
 
 CUSTOMER_ID = "3800751597"
+MCC_ACCOUNT_ID = "3011145605"  # MCC account where bid strategies are stored
 DEFAULT_BID_MICROS = 200_000  # €0.20
+
+# Bid strategy mapping based on custom label 1
+BID_STRATEGY_MAPPING = {
+    'a': 'DMA: Elektronica shops A - 0,25',
+    'b': 'DMA: Elektronica shops B - 0,21',
+    'c': 'DMA: Elektronica shops C - 0,17'
+}
 
 # Auto-detect Excel file path based on operating system
 def get_excel_path():
@@ -90,10 +98,9 @@ COL_SHOP_NAME = 0      # Column A: Shop name
 COL_SHOP_ID = 1        # Column B: Shop ID
 COL_MAINCAT = 2        # Column C: maincat
 COL_MAINCAT_ID = 3     # Column D: maincat_id
-COL_CAT_TOEVOEGEN = 4  # Column E: cat_toevoegen
-COL_DIEPSTE_CAT_ID = 5 # Column F: Diepste cat ID
-COL_CUSTOM_LABEL_1 = 6 # Column G: custom label 1
-COL_STATUS = 7         # Column H: Status (TRUE/FALSE)
+COL_CUSTOM_LABEL_1 = 4 # Column E: custom label 1
+COL_BUDGET = 5         # Column F: budget
+COL_STATUS = 6         # Column G: Status (TRUE/FALSE)
 
 # Column indices (0-based) - EXCLUSION SHEET (uitsluiten) - OLD STRUCTURE
 COL_EX_SHOP_NAME = 0      # Column A: Shop name
@@ -159,6 +166,53 @@ def initialize_google_ads_client():
         print("   - GOOGLE_ADS_REFRESH_TOKEN")
         print("   - GOOGLE_ADS_LOGIN_CUSTOMER_ID (optional)")
         sys.exit(1)
+
+
+# ============================================================================
+# BID STRATEGY RETRIEVAL
+# ============================================================================
+
+def get_bid_strategy_by_name(
+    client: GoogleAdsClient,
+    customer_id: str,
+    strategy_name: str
+) -> Optional[str]:
+    """
+    Retrieve portfolio bid strategy by name.
+
+    Args:
+        client: Google Ads client
+        customer_id: Customer ID
+        strategy_name: Bid strategy name to search for
+
+    Returns:
+        Bid strategy resource name or None if not found
+    """
+    ga_service = client.get_service("GoogleAdsService")
+
+    query = f"""
+        SELECT
+            bidding_strategy.id,
+            bidding_strategy.name,
+            bidding_strategy.resource_name
+        FROM bidding_strategy
+        WHERE bidding_strategy.name = '{strategy_name}'
+        LIMIT 1
+    """
+
+    try:
+        response = ga_service.search(customer_id=customer_id, query=query)
+
+        for row in response:
+            print(f"   📊 Found bid strategy: {row.bidding_strategy.name} (ID: {row.bidding_strategy.id})")
+            return row.bidding_strategy.resource_name
+
+        print(f"   ⚠️  Bid strategy '{strategy_name}' not found")
+        return None
+
+    except Exception as e:
+        print(f"   ❌ Error searching for bid strategy '{strategy_name}': {e}")
+        return None
 
 
 # ============================================================================
@@ -453,26 +507,35 @@ def build_listing_tree_for_inclusion(
     client: GoogleAdsClient,
     customer_id: str,
     ad_group_id: str,
+    maincat_id: str,
     shop_name: str,
-    diepste_cat_ids: list,
     default_bid_micros: int = DEFAULT_BID_MICROS
 ):
     """
-    Build listing tree for inclusion logic:
-    1. Root subdivision
-    2. Target shop_name as custom label 3
-    3. Subdivide by all diepste_cat_ids as custom label 0
-    4. Exclude everything else
+    Build listing tree for inclusion logic (NEW STRUCTURE):
+
+    Tree structure (matches example_functions.txt pattern):
+    ROOT (subdivision)
+    ├─ Custom Label 0 = maincat_id (subdivision)
+    │  ├─ Custom Label 3 = shop_name (unit, biddable, positive) ← Added in MUTATE 2
+    │  └─ Custom Label 3 OTHERS (unit, negative) ← Created in MUTATE 1 with temp name
+    └─ Custom Label 0 OTHERS (unit, negative)
+
+    CRITICAL: Google Ads requires that when you create a SUBDIVISION, you must
+    provide its OTHERS case in the SAME mutate operation using temporary resource names.
+
+    MUTATE 1: Create root + maincat subdivision + both OTHERS cases
+    MUTATE 2: Add positive shop_name target under maincat subdivision
 
     Args:
         client: Google Ads client
         customer_id: Customer ID
         ad_group_id: Ad group ID
+        maincat_id: Main category ID to target (custom label 0)
         shop_name: Shop name to target (custom label 3)
-        diepste_cat_ids: List of category IDs to target (custom label 0)
         default_bid_micros: Default bid in micros
     """
-    print(f"      Building tree: Shop={shop_name}, Categories={len(diepste_cat_ids)}")
+    print(f"      Building tree: Maincat ID={maincat_id}, Shop={shop_name}")
 
     # Remove existing tree if any
     safe_remove_entire_listing_tree(client, customer_id, ad_group_id)
@@ -480,7 +543,8 @@ def build_listing_tree_for_inclusion(
 
     agc_service = client.get_service("AdGroupCriterionService")
 
-    # MUTATE 1: Create root + Shop name subdivision (Custom Label 3)
+    # MUTATE 1: Create root + maincat_id subdivision + both OTHERS cases
+    # CRITICAL: When creating a subdivision, you MUST provide its OTHERS case in the SAME mutate
     ops1 = []
 
     # 1. ROOT SUBDIVISION
@@ -494,22 +558,41 @@ def build_listing_tree_for_inclusion(
     root_tmp = root_op.create.resource_name
     ops1.append(root_op)
 
-    # 2. Shop name subdivision (Custom Label 3 = shop_name)
-    dim_shop = client.get_type("ListingDimensionInfo")
-    dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2  # INDEX2 = Custom Label 3
-    dim_shop.product_custom_attribute.value = shop_name
+    # 2. Maincat ID subdivision (Custom Label 0 = maincat_id)
+    dim_maincat = client.get_type("ListingDimensionInfo")
+    dim_maincat.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0  # INDEX0 = Custom Label 0
+    dim_maincat.product_custom_attribute.value = str(maincat_id)
 
-    shop_subdivision_op = create_listing_group_subdivision(
+    maincat_subdivision_op = create_listing_group_subdivision(
         client=client,
         customer_id=customer_id,
         ad_group_id=ad_group_id,
         parent_ad_group_criterion_resource_name=root_tmp,
-        listing_dimension_info=dim_shop
+        listing_dimension_info=dim_maincat
     )
-    shop_subdivision_tmp = shop_subdivision_op.create.resource_name
-    ops1.append(shop_subdivision_op)
+    maincat_subdivision_tmp = maincat_subdivision_op.create.resource_name
+    ops1.append(maincat_subdivision_op)
 
-    # 3. Custom Label 3 OTHERS (negative - blocks other shops)
+    # 3. Custom Label 0 OTHERS (negative - blocks other categories)
+    # This is a child of ROOT and satisfies the OTHERS requirement for root
+    dim_cl0_others = client.get_type("ListingDimensionInfo")
+    dim_cl0_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0
+    # Don't set value - OTHERS case
+
+    ops1.append(
+        create_listing_group_unit_biddable(
+            client=client,
+            customer_id=customer_id,
+            ad_group_id=ad_group_id,
+            parent_ad_group_criterion_resource_name=root_tmp,
+            listing_dimension_info=dim_cl0_others,
+            targeting_negative=True,  # NEGATIVE
+            cpc_bid_micros=None
+        )
+    )
+
+    # 4. Custom Label 3 OTHERS (negative - blocks other shops)
+    # This is a child of maincat_id subdivision (using TEMP name) and satisfies its OTHERS requirement
     dim_cl3_others = client.get_type("ListingDimensionInfo")
     dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
     # Don't set value - OTHERS case
@@ -519,59 +602,42 @@ def build_listing_tree_for_inclusion(
             client=client,
             customer_id=customer_id,
             ad_group_id=ad_group_id,
-            parent_ad_group_criterion_resource_name=root_tmp,
+            parent_ad_group_criterion_resource_name=maincat_subdivision_tmp,  # Using TEMP name!
             listing_dimension_info=dim_cl3_others,
-            targeting_negative=True,  # NEGATIVE
+            targeting_negative=True,  # NEGATIVE - block other shops
             cpc_bid_micros=None
         )
     )
 
     # Execute first mutate
     resp1 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
-    shop_subdivision_actual = resp1.results[1].resource_name  # Second result is shop subdivision
+    maincat_subdivision_actual = resp1.results[1].resource_name  # Second result is maincat subdivision
     time.sleep(0.5)
 
-    # MUTATE 2: Create subdivisions for each diepste_cat_id (Custom Label 0) + OTHERS
+    # MUTATE 2: Under maincat_id, add the positive shop_name target
+    # Note: CL3 OTHERS was already created in MUTATE 1
     ops2 = []
 
-    # Add OTHERS first (everything not in our specific cat IDs)
-    dim_cl0_others = client.get_type("ListingDimensionInfo")
-    dim_cl0_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0  # Custom Label 0
-    # Don't set value - OTHERS case
+    # Shop name (Custom Label 3 = shop_name) - POSITIVE target
+    dim_shop = client.get_type("ListingDimensionInfo")
+    dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2  # INDEX2 = Custom Label 3
+    dim_shop.product_custom_attribute.value = shop_name
 
     ops2.append(
         create_listing_group_unit_biddable(
             client=client,
             customer_id=customer_id,
             ad_group_id=ad_group_id,
-            parent_ad_group_criterion_resource_name=shop_subdivision_actual,
-            listing_dimension_info=dim_cl0_others,
-            targeting_negative=True,  # NEGATIVE - block everything else
-            cpc_bid_micros=None
+            parent_ad_group_criterion_resource_name=maincat_subdivision_actual,
+            listing_dimension_info=dim_shop,
+            targeting_negative=False,  # POSITIVE - target this shop
+            cpc_bid_micros=10_000  # 1 cent = €0.01 = 10,000 micros
         )
     )
 
-    # Add each specific diepste_cat_id as positive target
-    for cat_id in diepste_cat_ids:
-        dim_cat = client.get_type("ListingDimensionInfo")
-        dim_cat.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0  # Custom Label 0
-        dim_cat.product_custom_attribute.value = str(cat_id)
-
-        ops2.append(
-            create_listing_group_unit_biddable(
-                client=client,
-                customer_id=customer_id,
-                ad_group_id=ad_group_id,
-                parent_ad_group_criterion_resource_name=shop_subdivision_actual,
-                listing_dimension_info=dim_cat,
-                targeting_negative=False,  # POSITIVE - target this category
-                cpc_bid_micros=default_bid_micros
-            )
-        )
-
     # Execute second mutate
     agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
-    print(f"      ✅ Tree created: Shop '{shop_name}' with {len(diepste_cat_ids)} categories")
+    print(f"      ✅ Tree created: Maincat '{maincat_id}' → Shop '{shop_name}'")
 
 
 # ============================================================================
@@ -586,14 +652,25 @@ def process_inclusion_sheet(
     """
     Process the 'toevoegen' (inclusion) sheet with NEW LOGIC.
 
+    Excel columns:
+    A. Shop name
+    B. Shop ID
+    C. maincat
+    D. maincat_id
+    E. custom label 1
+    F. budget (daily budget in EUR)
+    G. Status (TRUE/FALSE) - updated by script
+
     Groups rows by unique combination of (shop_name, maincat, custom_label_1).
     For each group:
     1. Create campaign with name: PLA/{maincat} {shop_name}_{custom_label_1}
+       - Uses budget from column F (converted to micros)
     2. Create ad group with name: PLA/{shop_name}_{custom_label_1}
     3. Build listing tree:
-       - Target shop_name as custom label 3
-       - Subdivide and target all Diepste cat IDs as custom label 0
-    4. Update column H (status) with TRUE/FALSE for all rows in group
+       - Target maincat_id as custom label 0
+       - Subdivide and target shop_name as custom label 3
+       - Exclude everything else at both levels
+    4. Update column G (status) with TRUE/FALSE for all rows in group
 
     Args:
         client: Google Ads client
@@ -616,17 +693,23 @@ def process_inclusion_sheet(
 
     print("Step 1: Reading and grouping rows...")
     for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=False), start=2):
+        # Check if status column (G) is empty - if so, this is where we start processing
+        status_value = row[COL_STATUS].value
+
+        # Skip rows that already have a status (TRUE/FALSE)
+        if status_value is not None and status_value != '':
+            continue
+
         shop_name = row[COL_SHOP_NAME].value
         shop_id = row[COL_SHOP_ID].value
         maincat = row[COL_MAINCAT].value
         maincat_id = row[COL_MAINCAT_ID].value
-        cat_toevoegen = row[COL_CAT_TOEVOEGEN].value
-        diepste_cat_id = row[COL_DIEPSTE_CAT_ID].value
         custom_label_1 = row[COL_CUSTOM_LABEL_1].value
+        budget = row[COL_BUDGET].value
 
         # Validate required fields
-        if not shop_name or not maincat or not custom_label_1:
-            print(f"   ⚠️  [Row {idx}] Missing required fields (shop_name/maincat/custom_label_1), skipping")
+        if not shop_name or not maincat or not maincat_id or not custom_label_1:
+            print(f"   ⚠️  [Row {idx}] Missing required fields (shop_name/maincat/maincat_id/custom_label_1), skipping")
             row[COL_STATUS].value = False
             continue
 
@@ -641,9 +724,8 @@ def process_inclusion_sheet(
             'shop_id': shop_id,
             'maincat': maincat,
             'maincat_id': maincat_id,
-            'cat_toevoegen': cat_toevoegen,
-            'diepste_cat_id': diepste_cat_id,
-            'custom_label_1': custom_label_1
+            'custom_label_1': custom_label_1,
+            'budget': budget
         })
 
     print(f"   Found {len(groups)} unique group(s) to process\n")
@@ -660,13 +742,14 @@ def process_inclusion_sheet(
         print(f"   Rows in group: {len(rows_in_group)}")
         print(f"{'─'*70}")
 
-        # Extract unique diepste_cat_ids from this group
-        diepste_cat_ids = list(set([r['diepste_cat_id'] for r in rows_in_group if r['diepste_cat_id']]))
-        print(f"   Unique Diepste cat IDs: {len(diepste_cat_ids)}")
-
-        # Get first row for metadata
+        # Get metadata from first row (all rows in group share same maincat, maincat_id, shop, budget)
         first_row = rows_in_group[0]
         shop_id = first_row['shop_id']
+        maincat_id = first_row['maincat_id']
+        budget_value = first_row['budget']
+
+        print(f"   Maincat ID: {maincat_id}")
+        print(f"   Budget: {budget_value} EUR")
 
         try:
             # Build campaign name: PLA/{maincat} {shop_name}_{custom_label_1}
@@ -678,7 +761,25 @@ def process_inclusion_sheet(
             budget_name = f"Budget_{campaign_name}"
             tracking_template = ""  # Not needed
             country = "NL"  # Always Netherlands
-            budget = 10_000_000  # 10 EUR daily budget in micros
+
+            # Convert budget from EUR to micros (EUR * 1,000,000)
+            # Default to 10 EUR if budget is missing or invalid
+            try:
+                budget_micros = int(float(budget_value) * 1_000_000) if budget_value else 10_000_000
+            except (ValueError, TypeError):
+                print(f"   ⚠️  Invalid budget value '{budget_value}', using default 10 EUR")
+                budget_micros = 10_000_000
+
+            # Get bid strategy based on custom label 1 (from MCC account)
+            bid_strategy_resource_name = None
+            if custom_label_1 in BID_STRATEGY_MAPPING:
+                bid_strategy_name = BID_STRATEGY_MAPPING[custom_label_1]
+                print(f"   Looking up bid strategy: {bid_strategy_name} (in MCC account)")
+                bid_strategy_resource_name = get_bid_strategy_by_name(
+                    client=client,
+                    customer_id=MCC_ACCOUNT_ID,  # Search in MCC account
+                    strategy_name=bid_strategy_name
+                )
 
             campaign_resource_name = add_standard_shopping_campaign(
                 client=client,
@@ -691,7 +792,8 @@ def process_inclusion_sheet(
                 shopid=shop_id,
                 shopname=shop_name,
                 label=custom_label_1,
-                budget=budget
+                budget=budget_micros,
+                bidding_strategy_resource_name=bid_strategy_resource_name
             )
 
             if not campaign_resource_name:
@@ -725,8 +827,8 @@ def process_inclusion_sheet(
                 client=client,
                 customer_id=customer_id,
                 ad_group_id=ad_group_id,
+                maincat_id=maincat_id,
                 shop_name=shop_name,
-                diepste_cat_ids=diepste_cat_ids,
                 default_bid_micros=DEFAULT_BID_MICROS
             )
 
@@ -784,6 +886,13 @@ def process_exclusion_sheet(
     success_count = 0
 
     for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=False), start=2):
+        # Check if status column (F) is empty - if so, this is where we start processing
+        status_value = row[COL_EX_STATUS].value
+
+        # Skip rows that already have a status (TRUE/FALSE)
+        if status_value is not None and status_value != '':
+            continue
+
         total_rows += 1
 
         # Extract values (using exclusion sheet column indices)

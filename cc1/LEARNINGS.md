@@ -17,6 +17,46 @@ docker exec -it <container> bash  # Enter container
 
 ## Common Issues & Solutions
 
+### Google Ads SUBDIVISION_REQUIRES_OTHERS_CASE Error
+**Problem**: Campaign listing tree creation fails with `criterion_error: LISTING_GROUP_SUBDIVISION_REQUIRES_OTHERS_CASE`
+**Solution**: When creating a SUBDIVISION node in Google Ads listing tree, you MUST provide its OTHERS case in the SAME mutate operation using temporary resource names
+**Correct Implementation**:
+```python
+# MUTATE 1: Create subdivision + its OTHERS case together
+ops1 = []
+
+# Create subdivision with temporary resource name
+subdivision_op = create_listing_group_subdivision(
+    parent=root_tmp,  # Using temp name
+    dimension=dim_maincat
+)
+subdivision_tmp = subdivision_op.create.resource_name
+ops1.append(subdivision_op)
+
+# Add OTHERS case as child of subdivision (using temp name)
+ops1.append(create_listing_group_unit(
+    parent=subdivision_tmp,  # Reference temp subdivision
+    dimension=dim_others,
+    negative=True
+))
+
+# Execute together
+response = service.mutate_ad_group_criteria(operations=ops1)
+subdivision_actual = response.results[0].resource_name  # Get actual name
+
+# MUTATE 2: Now add other children using actual resource name
+ops2 = []
+ops2.append(create_listing_group_unit(
+    parent=subdivision_actual,  # Use actual name from response
+    dimension=dim_specific_value,
+    negative=False
+))
+service.mutate_ad_group_criteria(operations=ops2)
+```
+**Root Cause**: Google Ads API requires subdivisions to have complete structure (including OTHERS) to prevent undefined states
+**Reference**: See example_functions.txt line 405-441 for working pattern
+_#claude-session:2025-11-12_
+
 ### ModuleNotFoundError: No module named 'dotenv'
 **Problem**: Script fails with missing dotenv module
 **Solution**: Install dependencies with `pip install -r requirements.txt` or `pip3 install python-dotenv google-ads openpyxl`
@@ -179,6 +219,68 @@ Root SUBDIVISION
 **Benefits**: Precise targeting control, excludes unwanted combinations, maintains clean tree hierarchy
 _#claude-session:2025-11-11_
 
+### Portfolio Bid Strategy from MCC Account
+**Pattern**: Search for and apply portfolio bid strategies from MCC account to campaigns in client accounts
+**Implementation**:
+```python
+# Configuration
+MCC_ACCOUNT_ID = "3011145605"  # MCC account where bid strategies are stored
+BID_STRATEGY_MAPPING = {
+    'a': 'DMA: Elektronica shops A - 0,25',
+    'b': 'DMA: Elektronica shops B - 0,21',
+    'c': 'DMA: Elektronica shops C - 0,17'
+}
+
+# Search in MCC account
+def get_bid_strategy_by_name(client, customer_id, strategy_name):
+    query = f"""
+        SELECT bidding_strategy.resource_name
+        FROM bidding_strategy
+        WHERE bidding_strategy.name = '{strategy_name}'
+    """
+    response = ga_service.search(customer_id=customer_id, query=query)
+    for row in response:
+        return row.bidding_strategy.resource_name
+    return None
+
+# Apply to campaign
+bid_strategy_name = BID_STRATEGY_MAPPING[custom_label_1]  # e.g., 'a' → strategy name
+bid_strategy_resource = get_bid_strategy_by_name(client, MCC_ACCOUNT_ID, bid_strategy_name)
+
+# When creating campaign
+campaign.bidding_strategy = bid_strategy_resource  # Portfolio strategy from MCC
+```
+**Benefits**: Centralized bid strategy management in MCC, applies to all client accounts
+**Use Case**: Multiple client accounts sharing same bid strategies defined at MCC level
+_#claude-session:2025-11-12_
+
+### Resumable Excel Processing
+**Pattern**: Skip rows that have already been processed to enable resuming from failures
+**Implementation**:
+```python
+for idx, row in enumerate(sheet.iter_rows(min_row=2), start=2):
+    # Check status column - skip if already processed
+    status_value = row[COL_STATUS].value
+    if status_value is not None and status_value != '':
+        continue  # Skip this row, already has TRUE or FALSE
+
+    # Process row...
+    try:
+        # Do work
+        row[COL_STATUS].value = True  # Mark as successful
+    except Exception as e:
+        row[COL_STATUS].value = False  # Mark as failed
+
+# Save workbook after processing
+workbook.save(excel_path)
+```
+**Benefits**:
+- Script can be re-run without duplicating work
+- Failed rows can be fixed and re-processed individually
+- Partial progress is saved even if script crashes
+**Use Case**: Large Excel files where processing may fail partway through
+_#claude-session:2025-11-12_
+
 ### Helper Functions for Campaign Management
 **Functions added to google_ads_helpers.py**:
 - `ensure_campaign_label_exists(client, customer_id, label_name)` - Creates or retrieves campaign label
@@ -215,4 +317,4 @@ _#claude-session:2025-11-11_
 
 ---
 _Created from template: 2025-11-10_
-_Updated: 2025-11-11_
+_Updated: 2025-11-12_

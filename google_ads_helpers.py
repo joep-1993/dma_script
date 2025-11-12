@@ -169,7 +169,8 @@ def create_listing_group_unit_biddable(
 
 def add_standard_shopping_campaign(
     client, customer_id, merchant_center_account_id, campaign_name, budget_name,
-    tracking_template, country, shopid, shopname, label, budget, final_url_suffix=None
+    tracking_template, country, shopid, shopname, label, budget, final_url_suffix=None,
+    bidding_strategy_resource_name=None
 ):
 
     campaign_service = client.get_service("CampaignService")
@@ -237,7 +238,15 @@ def add_standard_shopping_campaign(
     if final_url_suffix:
         campaign.final_url_suffix = final_url_suffix
     campaign.status = client.enums.CampaignStatusEnum.PAUSED
-    campaign.manual_cpc.enhanced_cpc_enabled = False
+
+    # Set bidding strategy
+    if bidding_strategy_resource_name:
+        # Use portfolio bid strategy
+        campaign.bidding_strategy = bidding_strategy_resource_name
+    else:
+        # Use manual CPC
+        campaign.manual_cpc.enhanced_cpc_enabled = False
+
     campaign.campaign_budget = campaign_budget_response.results[0].resource_name
     time.sleep(1)
     try:

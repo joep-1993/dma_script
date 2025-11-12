@@ -55,7 +55,7 @@ GOOGLE_ADS_DEVELOPER_TOKEN=your_developer_token
 GOOGLE_ADS_CLIENT_ID=your_client_id.apps.googleusercontent.com
 GOOGLE_ADS_CLIENT_SECRET=your_client_secret
 GOOGLE_ADS_REFRESH_TOKEN=your_refresh_token
-GOOGLE_ADS_LOGIN_CUSTOMER_ID=1234567890  # Optional: MCC account ID
+GOOGLE_ADS_LOGIN_CUSTOMER_ID=3011145605  # MCC account ID (used for bid strategy lookup)
 ```
 
 ### Optional (for web UI)
@@ -103,14 +103,17 @@ python3 campaign_processor.py
 **What it does**:
 1. Loads Google Ads credentials from `.env`
 2. Reads Excel file with two sheets: `toevoegen` (inclusion) and `uitsluiten` (exclusion)
-3. **Inclusion logic (NEW - grouping approach)**:
+3. **Inclusion logic** (processes rows with empty status in column G):
+   - Reads columns A-G: shop_name, shop_id, maincat, maincat_id, custom_label_1, budget, status
    - Groups rows by unique (shop_name, maincat, custom_label_1) combinations
    - For each group:
-     - Creates campaign: `PLA/{maincat} {shop_name}_{custom_label_1}`
+     - Looks up bid strategy from MCC account (3011145605) based on custom_label_1
+     - Creates campaign: `PLA/{maincat} {shop_name}_{custom_label_1}` with budget from Excel
+     - Applies portfolio bid strategy from MCC (if found, else manual CPC)
      - Creates ad group: `PLA/{shop_name}_{custom_label_1}`
-     - Builds listing tree targeting shop (CL3) and all categories (CL0) from group
-   - Updates column H with TRUE/FALSE for all rows in group
-4. **Exclusion logic (original approach)**:
+     - Builds listing tree: maincat_id (CL0) → shop_name (CL3) with 1 cent bid
+   - Updates column G with TRUE/FALSE for all rows in group
+4. **Exclusion logic** (processes rows with empty status in column F):
    - Finds existing campaigns by pattern
    - Rebuilds listing tree to exclude shop name (Custom Label 3)
    - Updates column F with TRUE/FALSE per row
@@ -118,16 +121,24 @@ python3 campaign_processor.py
 
 **Key Features**:
 - Auto-detects OS (Windows/WSL) and uses correct file paths
+- Resumable processing: skips rows with existing status values
 - Groups rows for efficient campaign creation (inclusion sheet)
-- Hierarchical listing tree: Shop (CL3) → Categories (CL0)
+- Hierarchical listing tree: maincat_id (CL0) → shop_name (CL3)
+- Portfolio bid strategies from MCC account
+- Budget per campaign from Excel
 - Comprehensive error handling and progress reporting
 
 **Configuration Constants**:
+- Client Account ID: `3800751597`
+- MCC Account ID: `3011145605` (for bid strategy lookup)
 - Merchant Center ID: `140784594`
-- Default budget: `10 EUR` per campaign (10,000,000 micros)
 - Country: `NL` (Netherlands)
-- Default bid: `2 cents` (20,000 micros) for ad groups
+- Targeted product bid: `1 cent` (10,000 micros)
 - Campaign label: `DMA_SCRIPT_JVS`
+- Bid Strategy Mapping:
+  - `a` → "DMA: Elektronica shops A - 0,25"
+  - `b` → "DMA: Elektronica shops B - 0,21"
+  - `c` → "DMA: Elektronica shops C - 0,17"
 
 ## API Endpoints (Optional Web UI)
 - `GET /` - System status
@@ -136,4 +147,4 @@ python3 campaign_processor.py
 - `GET /static/*` - Frontend files
 
 ---
-_Last updated: 2025-11-11_
+_Last updated: 2025-11-12_

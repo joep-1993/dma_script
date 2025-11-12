@@ -45,6 +45,12 @@ _What are we building and why?_
 ## Ideas Parking Lot
 _Capture ideas for future consideration_
 
+- Dynamic bid strategy assignment from Excel
+  - Add column to specify bid strategy per row instead of global mapping
+  - Allow override of default bid strategy based on custom label 1
+  - Support for different bid strategies per shop or category
+  - More flexible than hardcoded BID_STRATEGY_MAPPING
+  _#claude-session:2025-11-12_
 - Support for batch processing multiple Excel files
   - Process multiple campaigns from different Excel files in one run
   - Aggregate results across multiple files
@@ -53,4 +59,4 @@ _Capture ideas for future consideration_
 
 ---
 _Created: 2025-11-10_
-_Updated: 2025-11-11_
+_Updated: 2025-11-12_

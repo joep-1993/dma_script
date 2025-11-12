@@ -14,6 +14,22 @@ _Tasks currently being worked on (max 1-2 items)_
 ## Completed
 _Recently finished tasks_
 
+- [x] Implement resumable processing logic #claude-session:2025-11-12 #priority:medium
+  - Script now skips rows with existing status values (TRUE/FALSE)
+  - Enables continuing from where script left off after failures
+  - Inclusion sheet checks column G, exclusion sheet checks column F
+- [x] Update Excel column structure with budget support #claude-session:2025-11-12 #priority:medium
+  - Inclusion sheet now 7 columns: A-G (added budget in column F)
+  - Status column moved from F to G
+  - Budget read from Excel and converted to micros for campaign creation
+- [x] Integrate MCC account bid strategies #claude-session:2025-11-12 #priority:high
+  - Searches bid strategies in MCC account (3011145605) instead of client account
+  - Maps custom label 1 (a/b/c) to specific bid strategies: "DMA: Elektronica shops A/B/C"
+  - Applies portfolio bid strategy from MCC to campaigns in client account
+- [x] Fix listing tree SUBDIVISION_REQUIRES_OTHERS_CASE error #claude-session:2025-11-12 #priority:high
+  - Resolved critical Google Ads API error when creating listing tree subdivisions
+  - Solution: Provide OTHERS case in same mutate operation using temporary resource name
+  - Updated build_listing_tree_for_inclusion to follow correct pattern from example_functions.txt
 - [x] Refactor inclusion logic with campaign/ad group creation #claude-session:2025-11-11 #priority:critical
   - Groups rows by (shop_name, maincat, custom_label_1) before processing
   - Creates campaigns with pattern: PLA/{maincat} {shop_name}_{custom_label_1}
