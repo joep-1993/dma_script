@@ -420,10 +420,9 @@ def rebuild_tree_with_custom_label_3_exclusion(
     """
     Rebuild listing tree to EXCLUDE a specific shop name via custom label 3.
 
-    Structure:
-    Root SUBDIVISION
-    ├─ Custom Label 3 OTHERS [POSITIVE, biddable] → Show all shops
-    └─ Custom Label 3 = shop_name [NEGATIVE] → Block this specific shop
+    PRESERVES existing tree structure (subdivisions, exclusions, etc.) and adds
+    shop exclusion on top of it, similar to rebuild_tree_with_label_and_item_ids
+    in example_functions.txt.
 
     Args:
         client: Google Ads client
@@ -434,13 +433,92 @@ def rebuild_tree_with_custom_label_3_exclusion(
     """
     print(f"   Rebuilding tree to EXCLUDE shop '{shop_name}' (custom label 3)")
 
-    # Remove existing tree
+    # Step 1: Read existing tree structure
+    ga_service = client.get_service("GoogleAdsService")
+    ag_service = client.get_service("AdGroupService")
+    ag_path = ag_service.ad_group_path(customer_id, ad_group_id)
+
+    query = f"""
+        SELECT
+            ad_group_criterion.resource_name,
+            ad_group_criterion.listing_group.type,
+            ad_group_criterion.listing_group.parent_ad_group_criterion,
+            ad_group_criterion.listing_group.case_value.product_custom_attribute.index,
+            ad_group_criterion.listing_group.case_value.product_custom_attribute.value,
+            ad_group_criterion.negative,
+            ad_group_criterion.cpc_bid_micros
+        FROM ad_group_criterion
+        WHERE ad_group_criterion.ad_group = '{ag_path}'
+            AND ad_group_criterion.type = 'LISTING_GROUP'
+    """
+
+    try:
+        results = list(ga_service.search(customer_id=customer_id, query=query))
+    except Exception as e:
+        print(f"   ❌ Error reading existing tree: {e}")
+        # If can't read tree, create simple exclusion tree
+        _create_simple_exclusion_tree(client, customer_id, ad_group_id, shop_name, default_bid_micros)
+        return
+
+    if not results:
+        print("   ℹ️ No existing tree found. Creating new tree with shop exclusion.")
+        _create_simple_exclusion_tree(client, customer_id, ad_group_id, shop_name, default_bid_micros)
+        return
+
+    # Step 2: Analyze existing tree structure
+    tree_map = {}
+    for row in results:
+        criterion = row.ad_group_criterion
+        res_name = criterion.resource_name
+        lg = criterion.listing_group
+        parent = lg.parent_ad_group_criterion
+
+        tree_map[res_name] = {
+            'resource_name': res_name,
+            'type': lg.type_.name,
+            'parent': parent if parent else None,
+            'case_value': lg.case_value,
+            'negative': criterion.negative,
+            'bid_micros': criterion.cpc_bid_micros,
+        }
+
+    # Step 3: Collect ALL custom label structures to preserve (except CL3)
+    custom_label_structures = []
+    for res_name, node in tree_map.items():
+        case_val = node['case_value']
+        if (case_val and
+            case_val._pb.WhichOneof("dimension") == "product_custom_attribute"):
+            index_name = case_val.product_custom_attribute.index.name
+            value = case_val.product_custom_attribute.value
+
+            # Skip Custom Label 3 (we're replacing it) and OTHERS cases
+            if index_name == 'INDEX2':  # INDEX2 = Custom Label 3
+                continue
+            if not value or value == '':  # OTHERS case
+                continue
+
+            # Preserve all other custom label structures
+            if node['type'] == 'UNIT':
+                custom_label_structures.append({
+                    'index': index_name,
+                    'value': value,
+                    'negative': node['negative'],
+                    'bid_micros': node['bid_micros']
+                })
+
+    if custom_label_structures:
+        print(f"      ℹ️ Preserving {len(custom_label_structures)} existing custom label structure(s):")
+        for struct in custom_label_structures:
+            neg_str = "[NEGATIVE]" if struct['negative'] else "[POSITIVE]"
+            print(f"         - {struct['index']}: '{struct['value']}' {neg_str}")
+
+    # Step 4: Rebuild tree with shop exclusion + preserved structures
     safe_remove_entire_listing_tree(client, customer_id, str(ad_group_id))
     time.sleep(0.5)
 
     agc_service = client.get_service("AdGroupCriterionService")
 
-    # MUTATE 1: Create root SUBDIVISION + Custom Label 3 OTHERS (positive)
+    # MUTATE 1: Create root + CL3 OTHERS + preserved structures
     ops1 = []
 
     # 1. ROOT SUBDIVISION
@@ -454,10 +532,9 @@ def rebuild_tree_with_custom_label_3_exclusion(
     root_tmp = root_op.create.resource_name
     ops1.append(root_op)
 
-    # 2. Custom Label 3 OTHERS (positive - shows all shops)
+    # 2. Custom Label 3 OTHERS (positive - shows all other shops)
     dim_cl3_others = client.get_type("ListingDimensionInfo")
-    dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2  # INDEX2 = Custom Label 3
-    # Don't set value - OTHERS case
+    dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
 
     ops1.append(
         create_listing_group_unit_biddable(
@@ -466,21 +543,48 @@ def rebuild_tree_with_custom_label_3_exclusion(
             ad_group_id=str(ad_group_id),
             parent_ad_group_criterion_resource_name=root_tmp,
             listing_dimension_info=dim_cl3_others,
-            targeting_negative=False,  # POSITIVE - shows everything else
+            targeting_negative=False,
             cpc_bid_micros=default_bid_micros
         )
     )
+
+    # 3. Preserve existing custom label structures
+    for struct in custom_label_structures:
+        dim_preserved = client.get_type("ListingDimensionInfo")
+        # Map index name back to enum
+        if struct['index'] == 'INDEX0':
+            dim_preserved.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0
+        elif struct['index'] == 'INDEX1':
+            dim_preserved.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX1
+        elif struct['index'] == 'INDEX3':
+            dim_preserved.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
+        elif struct['index'] == 'INDEX4':
+            dim_preserved.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX4
+
+        dim_preserved.product_custom_attribute.value = struct['value']
+
+        ops1.append(
+            create_listing_group_unit_biddable(
+                client=client,
+                customer_id=customer_id,
+                ad_group_id=str(ad_group_id),
+                parent_ad_group_criterion_resource_name=root_tmp,
+                listing_dimension_info=dim_preserved,
+                targeting_negative=struct['negative'],
+                cpc_bid_micros=struct['bid_micros']
+            )
+        )
 
     # Execute first mutate
     resp1 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
     root_actual = resp1.results[0].resource_name
     time.sleep(0.5)
 
-    # MUTATE 2: Add specific shop name as NEGATIVE unit (exclusion)
+    # MUTATE 2: Add shop exclusion
     ops2 = []
 
     dim_shop = client.get_type("ListingDimensionInfo")
-    dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2  # INDEX2 = Custom Label 3
+    dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
     dim_shop.product_custom_attribute.value = shop_name
 
     ops2.append(
@@ -490,18 +594,77 @@ def rebuild_tree_with_custom_label_3_exclusion(
             ad_group_id=str(ad_group_id),
             parent_ad_group_criterion_resource_name=root_actual,
             listing_dimension_info=dim_shop,
-            targeting_negative=True,  # NEGATIVE targeting (exclusion)
+            targeting_negative=True,
             cpc_bid_micros=None
         )
     )
 
     agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
-    print(f"   ✅ Tree rebuilt: EXCLUDING shop '{shop_name}'")
+    print(f"   ✅ Tree rebuilt: EXCLUDING shop '{shop_name}' (preserved {len(custom_label_structures)} existing structures)")
 
 
-# ============================================================================
-# LISTING TREE BUILDING
-# ============================================================================
+def _create_simple_exclusion_tree(
+    client: GoogleAdsClient,
+    customer_id: str,
+    ad_group_id: int,
+    shop_name: str,
+    default_bid_micros: int
+):
+    """Helper to create simple shop exclusion tree when no existing tree found."""
+    safe_remove_entire_listing_tree(client, customer_id, str(ad_group_id))
+    time.sleep(0.5)
+
+    agc_service = client.get_service("AdGroupCriterionService")
+    ops1 = []
+
+    root_op = create_listing_group_subdivision(
+        client=client,
+        customer_id=customer_id,
+        ad_group_id=str(ad_group_id),
+        parent_ad_group_criterion_resource_name=None,
+        listing_dimension_info=None
+    )
+    root_tmp = root_op.create.resource_name
+    ops1.append(root_op)
+
+    dim_cl3_others = client.get_type("ListingDimensionInfo")
+    dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
+
+    ops1.append(
+        create_listing_group_unit_biddable(
+            client=client,
+            customer_id=customer_id,
+            ad_group_id=str(ad_group_id),
+            parent_ad_group_criterion_resource_name=root_tmp,
+            listing_dimension_info=dim_cl3_others,
+            targeting_negative=False,
+            cpc_bid_micros=default_bid_micros
+        )
+    )
+
+    resp1 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
+    root_actual = resp1.results[0].resource_name
+    time.sleep(0.5)
+
+    ops2 = []
+    dim_shop = client.get_type("ListingDimensionInfo")
+    dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
+    dim_shop.product_custom_attribute.value = shop_name
+
+    ops2.append(
+        create_listing_group_unit_biddable(
+            client=client,
+            customer_id=customer_id,
+            ad_group_id=str(ad_group_id),
+            parent_ad_group_criterion_resource_name=root_actual,
+            listing_dimension_info=dim_shop,
+            targeting_negative=True,
+            cpc_bid_micros=None
+        )
+    )
+
+    agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
+    print(f"   ✅ Simple exclusion tree created for shop '{shop_name}'")
 
 def build_listing_tree_for_inclusion(
     client: GoogleAdsClient,
@@ -650,7 +813,7 @@ def process_inclusion_sheet(
     customer_id: str
 ):
     """
-    Process the 'toevoegen' (inclusion) sheet with NEW LOGIC.
+    Process the 'toevoegen' (inclusion) sheet.
 
     Excel columns:
     A. Shop name
@@ -661,16 +824,19 @@ def process_inclusion_sheet(
     F. budget (daily budget in EUR)
     G. Status (TRUE/FALSE) - updated by script
 
-    Groups rows by unique combination of (shop_name, maincat, custom_label_1).
+    Groups rows by unique combination of (maincat, custom_label_1) ONLY.
     For each group:
-    1. Create campaign with name: PLA/{maincat} {shop_name}_{custom_label_1}
+    1. Create ONE campaign with name: PLA/{maincat} store_{custom_label_1}
        - Uses budget from column F (converted to micros)
-    2. Create ad group with name: PLA/{shop_name}_{custom_label_1}
-    3. Build listing tree:
+       - Applies bid strategy from MCC based on custom_label_1
+    2. Create MULTIPLE ad groups (one per unique shop_name in group)
+       - Ad group names: PLA/{shop_name}_{custom_label_1}
+    3. Build listing tree for EACH ad group:
        - Target maincat_id as custom label 0
        - Subdivide and target shop_name as custom label 3
        - Exclude everything else at both levels
-    4. Update column G (status) with TRUE/FALSE for all rows in group
+       - Bid: 1 cent (10,000 micros)
+    4. Update column G (status) with TRUE/FALSE per row based on shop success
 
     Args:
         client: Google Ads client
@@ -687,9 +853,9 @@ def process_inclusion_sheet(
         print(f"❌ Sheet '{SHEET_INCLUSION}' not found in workbook")
         return
 
-    # Step 1: Read all rows and group by (shop_name, maincat, custom_label_1)
+    # Step 1: Read all rows and group by (maincat, custom_label_1) only
     from collections import defaultdict
-    groups = defaultdict(list)  # key: (shop_name, maincat, custom_label_1), value: list of row data
+    groups = defaultdict(list)  # key: (maincat, custom_label_1), value: list of row data
 
     print("Step 1: Reading and grouping rows...")
     for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=False), start=2):
@@ -713,8 +879,8 @@ def process_inclusion_sheet(
             row[COL_STATUS].value = False
             continue
 
-        # Group key
-        group_key = (shop_name, maincat, custom_label_1)
+        # NEW: Group by (maincat, custom_label_1) only - multiple shops per campaign
+        group_key = (maincat, custom_label_1)
 
         # Store row data
         groups[group_key].append({
@@ -735,25 +901,30 @@ def process_inclusion_sheet(
     successful_groups = 0
 
     for group_idx, (group_key, rows_in_group) in enumerate(groups.items(), start=1):
-        shop_name, maincat, custom_label_1 = group_key
+        maincat, custom_label_1 = group_key
 
         print(f"\n{'─'*70}")
-        print(f"GROUP {group_idx}/{total_groups}: {shop_name} | {maincat} | {custom_label_1}")
+        print(f"GROUP {group_idx}/{total_groups}: {maincat} | {custom_label_1}")
         print(f"   Rows in group: {len(rows_in_group)}")
         print(f"{'─'*70}")
 
-        # Get metadata from first row (all rows in group share same maincat, maincat_id, shop, budget)
+        # Get metadata from first row (all rows in group share same maincat, maincat_id, budget)
         first_row = rows_in_group[0]
-        shop_id = first_row['shop_id']
         maincat_id = first_row['maincat_id']
         budget_value = first_row['budget']
 
+        # Get unique shops in this group
+        unique_shops = {}  # shop_name -> shop_id mapping
+        for row_data in rows_in_group:
+            unique_shops[row_data['shop_name']] = row_data['shop_id']
+
         print(f"   Maincat ID: {maincat_id}")
         print(f"   Budget: {budget_value} EUR")
+        print(f"   Unique shops in group: {len(unique_shops)}")
 
         try:
-            # Build campaign name: PLA/{maincat} {shop_name}_{custom_label_1}
-            campaign_name = f"PLA/{maincat} {shop_name}_{custom_label_1}"
+            # NEW: Build campaign name: PLA/{maincat} store_{custom_label_1}
+            campaign_name = f"PLA/{maincat} store_{custom_label_1}"
             print(f"\n   Step 1: Creating/finding campaign: {campaign_name}")
 
             # Campaign configuration
@@ -781,6 +952,10 @@ def process_inclusion_sheet(
                     strategy_name=bid_strategy_name
                 )
 
+            # Use first shop's ID for campaign metadata
+            first_shop_id = list(unique_shops.values())[0]
+            first_shop_name = list(unique_shops.keys())[0]
+
             campaign_resource_name = add_standard_shopping_campaign(
                 client=client,
                 customer_id=customer_id,
@@ -789,8 +964,8 @@ def process_inclusion_sheet(
                 budget_name=budget_name,
                 tracking_template=tracking_template,
                 country=country,
-                shopid=shop_id,
-                shopname=shop_name,
+                shopid=first_shop_id,
+                shopname=first_shop_name,
                 label=custom_label_1,
                 budget=budget_micros,
                 bidding_strategy_resource_name=bid_strategy_resource_name
@@ -801,45 +976,62 @@ def process_inclusion_sheet(
 
             print(f"   ✅ Campaign ready: {campaign_resource_name}")
 
-            # Build ad group name: PLA/{shop_name}_{custom_label_1}
-            ad_group_name = f"PLA/{shop_name}_{custom_label_1}"
-            print(f"\n   Step 2: Creating/finding ad group: {ad_group_name}")
+            # NEW: Create multiple ad groups - one for each unique shop
+            print(f"\n   Step 2: Creating ad groups for {len(unique_shops)} shop(s)...")
+            shops_processed_successfully = []
 
-            ad_group_resource_name, was_created = add_shopping_ad_group(
-                client=client,
-                customer_id=customer_id,
-                campaign_resource_name=campaign_resource_name,
-                ad_group_name=ad_group_name,
-                campaign_name=campaign_name
-            )
+            for shop_idx, (shop_name, shop_id) in enumerate(unique_shops.items(), start=1):
+                print(f"\n   ──── Shop {shop_idx}/{len(unique_shops)}: {shop_name} ────")
 
-            if not ad_group_resource_name:
-                raise Exception("Failed to create/find ad group")
+                try:
+                    # Build ad group name: PLA/{shop_name}_{custom_label_1}
+                    ad_group_name = f"PLA/{shop_name}_{custom_label_1}"
+                    print(f"      Creating ad group: {ad_group_name}")
 
-            print(f"   ✅ Ad group ready: {ad_group_resource_name}")
+                    ad_group_resource_name, was_created = add_shopping_ad_group(
+                        client=client,
+                        customer_id=customer_id,
+                        campaign_resource_name=campaign_resource_name,
+                        ad_group_name=ad_group_name,
+                        campaign_name=campaign_name
+                    )
 
-            # Extract ad group ID from resource name
-            ad_group_id = ad_group_resource_name.split('/')[-1]
+                    if not ad_group_resource_name:
+                        raise Exception(f"Failed to create/find ad group for {shop_name}")
 
-            # Build listing tree
-            print(f"\n   Step 3: Building listing tree...")
-            build_listing_tree_for_inclusion(
-                client=client,
-                customer_id=customer_id,
-                ad_group_id=ad_group_id,
-                maincat_id=maincat_id,
-                shop_name=shop_name,
-                default_bid_micros=DEFAULT_BID_MICROS
-            )
+                    print(f"      ✅ Ad group ready: {ad_group_resource_name}")
 
-            print(f"   ✅ Listing tree created successfully")
+                    # Extract ad group ID from resource name
+                    ad_group_id = ad_group_resource_name.split('/')[-1]
 
-            # Mark all rows in this group as successful
+                    # Build listing tree for this shop
+                    print(f"      Building listing tree...")
+                    build_listing_tree_for_inclusion(
+                        client=client,
+                        customer_id=customer_id,
+                        ad_group_id=ad_group_id,
+                        maincat_id=maincat_id,
+                        shop_name=shop_name,
+                        default_bid_micros=DEFAULT_BID_MICROS
+                    )
+
+                    print(f"      ✅ Listing tree created for {shop_name}")
+                    shops_processed_successfully.append(shop_name)
+
+                except Exception as e:
+                    print(f"      ❌ Failed to process shop {shop_name}: {e}")
+                    # Continue with next shop instead of failing entire group
+
+            # Mark rows as successful/failed based on their shop
             for row_data in rows_in_group:
-                row_data['row_obj'][COL_STATUS].value = True
+                if row_data['shop_name'] in shops_processed_successfully:
+                    row_data['row_obj'][COL_STATUS].value = True
+                else:
+                    row_data['row_obj'][COL_STATUS].value = False
 
-            successful_groups += 1
-            print(f"\n   ✅ GROUP {group_idx} COMPLETED SUCCESSFULLY")
+            if len(shops_processed_successfully) > 0:
+                successful_groups += 1
+                print(f"\n   ✅ GROUP {group_idx} COMPLETED: {len(shops_processed_successfully)}/{len(unique_shops)} shops processed")
 
         except Exception as e:
             print(f"\n   ❌ GROUP {group_idx} FAILED: {e}")
