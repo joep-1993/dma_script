@@ -772,6 +772,7 @@ def build_listing_tree_for_inclusion(
     client: GoogleAdsClient,
     customer_id: str,
     ad_group_id: str,
+    custom_label_1: str,
     maincat_id: str,
     shop_name: str,
     default_bid_micros: int = DEFAULT_BID_MICROS
@@ -781,26 +782,30 @@ def build_listing_tree_for_inclusion(
 
     Tree structure (matches example_functions.txt pattern):
     ROOT (subdivision)
-    ├─ Custom Label 0 = maincat_id (subdivision)
-    │  ├─ Custom Label 3 = shop_name (unit, biddable, positive) ← Added in MUTATE 2
-    │  └─ Custom Label 3 OTHERS (unit, negative) ← Created in MUTATE 1 with temp name
-    └─ Custom Label 0 OTHERS (unit, negative)
+    ├─ Custom Label 1 = custom_label_1 (subdivision) [a/b/c]
+    │  ├─ Custom Label 1 OTHERS (unit, negative)
+    │  └─ Custom Label 0 = maincat_id (subdivision)
+    │     ├─ Custom Label 0 OTHERS (unit, negative)
+    │     ├─ Custom Label 3 = shop_name (unit, biddable, positive) ← Added in MUTATE 2
+    │     └─ Custom Label 3 OTHERS (unit, negative) ← Created in MUTATE 1 with temp name
+    └─ Custom Label 1 OTHERS (unit, negative)
 
     CRITICAL: Google Ads requires that when you create a SUBDIVISION, you must
     provide its OTHERS case in the SAME mutate operation using temporary resource names.
 
-    MUTATE 1: Create root + maincat subdivision + both OTHERS cases
+    MUTATE 1: Create root + CL1 subdivision + CL0 subdivision + all OTHERS cases
     MUTATE 2: Add positive shop_name target under maincat subdivision
 
     Args:
         client: Google Ads client
         customer_id: Customer ID
         ad_group_id: Ad group ID
+        custom_label_1: Custom label 1 value (a/b/c)
         maincat_id: Main category ID to target (custom label 0)
         shop_name: Shop name to target (custom label 3)
         default_bid_micros: Default bid in micros
     """
-    print(f"      Building tree: Maincat ID={maincat_id}, Shop={shop_name}")
+    print(f"      Building tree: CL1={custom_label_1}, Maincat ID={maincat_id}, Shop={shop_name}")
 
     # Remove existing tree if any
     safe_remove_entire_listing_tree(client, customer_id, ad_group_id)
@@ -808,7 +813,7 @@ def build_listing_tree_for_inclusion(
 
     agc_service = client.get_service("AdGroupCriterionService")
 
-    # MUTATE 1: Create root + maincat_id subdivision + both OTHERS cases
+    # MUTATE 1: Create root + CL1 subdivision + CL0 subdivision + all OTHERS cases
     # CRITICAL: When creating a subdivision, you MUST provide its OTHERS case in the SAME mutate
     ops1 = []
 
@@ -823,7 +828,41 @@ def build_listing_tree_for_inclusion(
     root_tmp = root_op.create.resource_name
     ops1.append(root_op)
 
-    # 2. Maincat ID subdivision (Custom Label 0 = maincat_id)
+    # 2. Custom Label 1 subdivision (Custom Label 1 = a/b/c)
+    dim_cl1 = client.get_type("ListingDimensionInfo")
+    dim_cl1.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX1  # INDEX1 = Custom Label 1
+    dim_cl1.product_custom_attribute.value = str(custom_label_1)
+
+    cl1_subdivision_op = create_listing_group_subdivision(
+        client=client,
+        customer_id=customer_id,
+        ad_group_id=ad_group_id,
+        parent_ad_group_criterion_resource_name=root_tmp,
+        listing_dimension_info=dim_cl1
+    )
+    cl1_subdivision_tmp = cl1_subdivision_op.create.resource_name
+    ops1.append(cl1_subdivision_op)
+
+    # 3. Custom Label 1 OTHERS (negative - blocks other CL1 values)
+    # This is a child of ROOT and satisfies the OTHERS requirement for root
+    dim_cl1_others = client.get_type("ListingDimensionInfo")
+    dim_cl1_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX1
+    # Don't set value - OTHERS case
+
+    ops1.append(
+        create_listing_group_unit_biddable(
+            client=client,
+            customer_id=customer_id,
+            ad_group_id=ad_group_id,
+            parent_ad_group_criterion_resource_name=root_tmp,
+            listing_dimension_info=dim_cl1_others,
+            targeting_negative=True,  # NEGATIVE
+            cpc_bid_micros=None
+        )
+    )
+
+    # 4. Maincat ID subdivision (Custom Label 0 = maincat_id)
+    # This is a child of CL1 subdivision (using TEMP name)
     dim_maincat = client.get_type("ListingDimensionInfo")
     dim_maincat.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0  # INDEX0 = Custom Label 0
     dim_maincat.product_custom_attribute.value = str(maincat_id)
@@ -832,14 +871,14 @@ def build_listing_tree_for_inclusion(
         client=client,
         customer_id=customer_id,
         ad_group_id=ad_group_id,
-        parent_ad_group_criterion_resource_name=root_tmp,
+        parent_ad_group_criterion_resource_name=cl1_subdivision_tmp,  # Under CL1, not ROOT!
         listing_dimension_info=dim_maincat
     )
     maincat_subdivision_tmp = maincat_subdivision_op.create.resource_name
     ops1.append(maincat_subdivision_op)
 
-    # 3. Custom Label 0 OTHERS (negative - blocks other categories)
-    # This is a child of ROOT and satisfies the OTHERS requirement for root
+    # 5. Custom Label 0 OTHERS (negative - blocks other categories)
+    # This is a child of CL1 subdivision and satisfies the OTHERS requirement for CL1
     dim_cl0_others = client.get_type("ListingDimensionInfo")
     dim_cl0_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0
     # Don't set value - OTHERS case
@@ -849,14 +888,14 @@ def build_listing_tree_for_inclusion(
             client=client,
             customer_id=customer_id,
             ad_group_id=ad_group_id,
-            parent_ad_group_criterion_resource_name=root_tmp,
+            parent_ad_group_criterion_resource_name=cl1_subdivision_tmp,  # Child of CL1
             listing_dimension_info=dim_cl0_others,
             targeting_negative=True,  # NEGATIVE
             cpc_bid_micros=None
         )
     )
 
-    # 4. Custom Label 3 OTHERS (negative - blocks other shops)
+    # 6. Custom Label 3 OTHERS (negative - blocks other shops)
     # This is a child of maincat_id subdivision (using TEMP name) and satisfies its OTHERS requirement
     dim_cl3_others = client.get_type("ListingDimensionInfo")
     dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
@@ -876,7 +915,7 @@ def build_listing_tree_for_inclusion(
 
     # Execute first mutate
     resp1 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
-    maincat_subdivision_actual = resp1.results[1].resource_name  # Second result is maincat subdivision
+    maincat_subdivision_actual = resp1.results[3].resource_name  # Fourth result is maincat subdivision (0=root, 1=cl1, 2=cl1_others, 3=cl0)
     time.sleep(0.5)
 
     # MUTATE 2: Under maincat_id, add the positive shop_name target
@@ -902,7 +941,7 @@ def build_listing_tree_for_inclusion(
 
     # Execute second mutate
     agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
-    print(f"      ✅ Tree created: Maincat '{maincat_id}' → Shop '{shop_name}'")
+    print(f"      ✅ Tree created: CL1 '{custom_label_1}' → Maincat '{maincat_id}' → Shop '{shop_name}'")
 
 
 # ============================================================================
@@ -1112,6 +1151,7 @@ def process_inclusion_sheet(
                         client=client,
                         customer_id=customer_id,
                         ad_group_id=ad_group_id,
+                        custom_label_1=custom_label_1,
                         maincat_id=maincat_id,
                         shop_name=shop_name,
                         default_bid_micros=DEFAULT_BID_MICROS
