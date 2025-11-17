@@ -114,15 +114,15 @@ python3 campaign_processor.py
      - Creates campaign: `PLA/{maincat} {shop_name}_{custom_label_1}` with budget from Excel
      - Applies portfolio bid strategy from MCC (if found, else manual CPC)
      - Creates MULTIPLE ad groups (one per shop): `PLA/{shop_name}_{custom_label_1}`
-     - Builds listing tree per ad group: maincat_id (CL0) → shop_name (CL3) with 1 cent bid
+     - Builds listing tree per ad group: maincat_id (CL4) → shop_name (CL3) with 1 cent bid
      - Enables concurrent processing of multiple shops in same campaign
    - Updates column G with TRUE/FALSE for all rows in group
 4. **Exclusion logic** (processes rows with empty status in column F):
    - Finds existing campaigns by pattern
    - Rebuilds listing tree to exclude shop name (Custom Label 3)
-   - **PRESERVES existing tree structures**: CL0 and CL1 subdivisions/units are maintained
-   - Converts positive CL0 units to subdivisions when adding CL3 exclusions
-   - Final structure: ROOT → CL1 → CL0 → CL3 (hierarchical, all existing targeting preserved)
+   - **PRESERVES existing tree structures**: CL4 and CL1 subdivisions/units are maintained
+   - Converts positive CL4 units to subdivisions when adding CL3 exclusions
+   - Final structure: ROOT → CL1 → CL4 → CL3 (hierarchical, all existing targeting preserved)
    - Updates column F with TRUE/FALSE per row
 5. Saves results back to Excel file
 
@@ -130,7 +130,7 @@ python3 campaign_processor.py
 - Auto-detects OS (Windows/WSL) and uses correct file paths
 - Resumable processing: skips rows with existing status values
 - Groups rows for efficient campaign creation (inclusion sheet)
-- Hierarchical listing tree: maincat_id (CL0) → shop_name (CL3)
+- Hierarchical listing tree: maincat_id (CL4) → shop_name (CL3)
 - Portfolio bid strategies from MCC account
 - Budget per campaign from Excel
 - Comprehensive error handling and progress reporting

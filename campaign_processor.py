@@ -784,8 +784,8 @@ def build_listing_tree_for_inclusion(
     ROOT (subdivision)
     ├─ Custom Label 1 = custom_label_1 (subdivision) [a/b/c]
     │  ├─ Custom Label 1 OTHERS (unit, negative)
-    │  └─ Custom Label 0 = maincat_id (subdivision)
-    │     ├─ Custom Label 0 OTHERS (unit, negative)
+    │  └─ Custom Label 4 = maincat_id (subdivision)
+    │     ├─ Custom Label 4 OTHERS (unit, negative)
     │     ├─ Custom Label 3 = shop_name (unit, biddable, positive) ← Added in MUTATE 2
     │     └─ Custom Label 3 OTHERS (unit, negative) ← Created in MUTATE 1 with temp name
     └─ Custom Label 1 OTHERS (unit, negative)
@@ -801,7 +801,7 @@ def build_listing_tree_for_inclusion(
         customer_id: Customer ID
         ad_group_id: Ad group ID
         custom_label_1: Custom label 1 value (a/b/c)
-        maincat_id: Main category ID to target (custom label 0)
+        maincat_id: Main category ID to target (custom label 4)
         shop_name: Shop name to target (custom label 3)
         default_bid_micros: Default bid in micros
     """
@@ -861,10 +861,10 @@ def build_listing_tree_for_inclusion(
         )
     )
 
-    # 4. Maincat ID subdivision (Custom Label 0 = maincat_id)
+    # 4. Maincat ID subdivision (Custom Label 4 = maincat_id)
     # This is a child of CL1 subdivision (using TEMP name)
     dim_maincat = client.get_type("ListingDimensionInfo")
-    dim_maincat.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0  # INDEX0 = Custom Label 0
+    dim_maincat.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX4  # INDEX4 = Custom Label 4
     dim_maincat.product_custom_attribute.value = str(maincat_id)
 
     maincat_subdivision_op = create_listing_group_subdivision(
@@ -877,10 +877,10 @@ def build_listing_tree_for_inclusion(
     maincat_subdivision_tmp = maincat_subdivision_op.create.resource_name
     ops1.append(maincat_subdivision_op)
 
-    # 5. Custom Label 0 OTHERS (negative - blocks other categories)
+    # 5. Custom Label 4 OTHERS (negative - blocks other categories)
     # This is a child of CL1 subdivision and satisfies the OTHERS requirement for CL1
-    dim_cl0_others = client.get_type("ListingDimensionInfo")
-    dim_cl0_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0
+    dim_cl4_others = client.get_type("ListingDimensionInfo")
+    dim_cl4_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX4
     # Don't set value - OTHERS case
 
     ops1.append(
@@ -889,7 +889,7 @@ def build_listing_tree_for_inclusion(
             customer_id=customer_id,
             ad_group_id=ad_group_id,
             parent_ad_group_criterion_resource_name=cl1_subdivision_tmp,  # Child of CL1
-            listing_dimension_info=dim_cl0_others,
+            listing_dimension_info=dim_cl4_others,
             targeting_negative=True,  # NEGATIVE
             cpc_bid_micros=None
         )
@@ -973,7 +973,7 @@ def process_inclusion_sheet(
     2. Create MULTIPLE ad groups (one per unique shop_name in group)
        - Ad group names: PLA/{shop_name}_{custom_label_1}
     3. Build listing tree for EACH ad group:
-       - Target maincat_id as custom label 0
+       - Target maincat_id as custom label 4
        - Subdivide and target shop_name as custom label 3
        - Exclude everything else at both levels
        - Bid: 1 cent (10,000 micros)
@@ -1332,7 +1332,6 @@ def main():
         process_exclusion_sheet(client, workbook, CUSTOMER_ID)
     except Exception as e:
         print(f"❌ Error processing exclusion sheet: {e}")
-
     # Save workbook with updates
     print(f"\n{'='*70}")
     print("SAVING RESULTS")

@@ -51,27 +51,27 @@ _#claude-session:2025-11-12_
 
 ### Google Ads LISTING_GROUP_REQUIRES_SAME_DIMENSION_TYPE_AS_SIBLINGS Error
 **Problem**: When trying to preserve existing tree structures while adding shop exclusions, get error "Dimension type of listing group must be the same as that of its siblings"
-**Symptoms**: Cannot add CL0 (Custom Label 0) and CL3 (Custom Label 3) as siblings under same parent
-**Root Cause**: Google Ads requires all sibling nodes in listing tree to have the SAME dimension type. Cannot mix CL0, CL1, CL3 as siblings.
+**Symptoms**: Cannot add CL4 (Custom Label 4) and CL3 (Custom Label 3) as siblings under same parent
+**Root Cause**: Google Ads requires all sibling nodes in listing tree to have the SAME dimension type. Cannot mix CL4, CL1, CL3 as siblings.
 **Solution**: Build hierarchical tree where each level has ONE dimension type:
 ```
 ROOT (level 0)
 └─ CL1 = 'a' (level 1 - only CL1 nodes)
-   └─ CL0 = '9005157' (level 2 - only CL0 nodes)
+   └─ CL4 = '9005157' (level 2 - only CL4 nodes)
       ├─ CL3 = 'shop.nl' (level 3 - only CL3 nodes)
       └─ CL3 = OTHERS (level 3 - only CL3 nodes)
 ```
 **Pattern**: When adding deeper nesting, convert positive UNIT nodes to SUBDIVISIONS:
 ```python
-# If CL0 was a positive UNIT node, convert to SUBDIVISION
-cl0_subdivision_op = create_listing_group_subdivision(
+# If CL4 was a positive UNIT node, convert to SUBDIVISION
+cl4_subdivision_op = create_listing_group_subdivision(
     parent=deepest_parent,
-    dimension=dim_cl0  # CL0 = '9005157'
+    dimension=dim_cl4  # CL4 = '9005157'
 )
 
 # Then nest CL3 under it
 ops.append(create_listing_group_unit(
-    parent=cl0_subdivision_tmp,
+    parent=cl4_subdivision_tmp,
     dimension=dim_cl3_shop,  # CL3 = 'shop.nl'
     negative=True
 ))
@@ -269,9 +269,9 @@ _#claude-session:2025-11-11_
 ```
 Root SUBDIVISION
 ├─ Shop Name (Custom Label 3) = "Shop A" [SUBDIVISION]
-│  ├─ Category (Custom Label 0) = "Cat1" [UNIT, POSITIVE, biddable]
-│  ├─ Category (Custom Label 0) = "Cat2" [UNIT, POSITIVE, biddable]
-│  └─ OTHERS (Custom Label 0) [UNIT, NEGATIVE]
+│  ├─ Category (Custom Label 4) = "Cat1" [UNIT, POSITIVE, biddable]
+│  ├─ Category (Custom Label 4) = "Cat2" [UNIT, POSITIVE, biddable]
+│  └─ OTHERS (Custom Label 4) [UNIT, NEGATIVE]
 └─ OTHERS (Custom Label 3) [UNIT, NEGATIVE]
 ```
 **Implementation**:
@@ -352,19 +352,44 @@ _#claude-session:2025-11-12_
 **Pattern**: Keep campaign management logic in helper file, import into main script
 _#claude-session:2025-11-11_
 
+### Custom Label Mapping: maincat_id → Custom Label 4
+**Change**: Modified inclusion function to target maincat_id using Custom Label 4 instead of Custom Label 0
+**Reason**: Align with updated product feed structure where maincat_id is mapped to Custom Label 4
+**Implementation**:
+```python
+# Old: Using INDEX0 (Custom Label 0)
+dim_maincat.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0
+
+# New: Using INDEX4 (Custom Label 4)
+dim_maincat.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX4
+```
+**Updated Tree Structure**:
+```
+ROOT (subdivision)
+├─ Custom Label 1 = custom_label_1 (subdivision) [a/b/c]
+│  ├─ Custom Label 1 OTHERS (unit, negative)
+│  └─ Custom Label 4 = maincat_id (subdivision)
+│     ├─ Custom Label 4 OTHERS (unit, negative)
+│     ├─ Custom Label 3 = shop_name (unit, biddable, positive)
+│     └─ Custom Label 3 OTHERS (unit, negative)
+└─ Custom Label 1 OTHERS (unit, negative)
+```
+**Files Updated**: `campaign_processor.py` (lines 867, 883, 787-788, 804, 976)
+_#claude-session:2025-11-17_
+
 ### Preserving Hierarchical Listing Tree Structures
 **Pattern**: When modifying listing trees, preserve existing custom label subdivisions and units by collecting BOTH types and rebuilding hierarchy
-**Problem**: Exclusion logic was destroying existing CL0 and CL1 targeting when adding CL3 shop exclusions
+**Problem**: Exclusion logic was destroying existing CL4 and CL1 targeting when adding CL3 shop exclusions
 **Solution**:
 ```python
 # Step 1: Collect BOTH subdivisions (hierarchy) and units (targeting)
-custom_label_subdivisions = []  # CL0/CL1 subdivision nodes
-custom_label_structures = []     # CL0/CL1 unit nodes
+custom_label_subdivisions = []  # CL4/CL1 subdivision nodes
+custom_label_structures = []     # CL4/CL1 unit nodes
 
 for row in results:
     if is_subdivision:
         custom_label_subdivisions.append({
-            'index': index_name,  # e.g., 'INDEX0' or 'INDEX1'
+            'index': index_name,  # e.g., 'INDEX4' or 'INDEX1'
             'value': value,       # e.g., '9005157' or 'a'
             'parent': parent_resource
         })
@@ -376,9 +401,9 @@ for row in results:
             'bid_micros': bid
         })
 
-# Step 2: Rebuild subdivisions hierarchically (ROOT → CL1 → CL0)
-# Step 3: Convert positive CL0 units to subdivisions
-# Step 4: Nest CL3 exclusions under CL0 subdivisions
+# Step 2: Rebuild subdivisions hierarchically (ROOT → CL1 → CL4)
+# Step 3: Convert positive CL4 units to subdivisions
+# Step 4: Nest CL3 exclusions under CL4 subdivisions
 ```
 **Key Insight**: Must differentiate between SUBDIVISION nodes (define hierarchy) and UNIT nodes (targeting/exclusions). When adding deeper nesting, convert units to subdivisions.
 **Reference**: Follow pattern from `rebuild_tree_with_label_and_item_ids` in example_functions.txt
@@ -386,44 +411,44 @@ _#claude-session:2025-11-12_
 
 ### Converting Units to Subdivisions for Deeper Nesting
 **Pattern**: When adding deeper custom label levels to existing tree, convert positive UNIT nodes to SUBDIVISION nodes
-**Use Case**: Have CL0='9005157' as positive UNIT with bid. Need to add CL3 shop exclusions under it.
+**Use Case**: Have CL4='9005157' as positive UNIT with bid. Need to add CL3 shop exclusions under it.
 **Implementation**:
 ```python
 # Original structure:
-# ROOT → CL1='a' [SUBDIVISION] → CL0='9005157' [UNIT, positive, bid=1.00€]
+# ROOT → CL1='a' [SUBDIVISION] → CL4='9005157' [UNIT, positive, bid=1.00€]
 
-# Convert CL0 unit to subdivision
-cl0_subdivision_op = create_listing_group_subdivision(
+# Convert CL4 unit to subdivision
+cl4_subdivision_op = create_listing_group_subdivision(
     parent=cl1_actual,
-    dimension=dim_cl0  # CL0 = '9005157'
+    dimension=dim_cl4  # CL4 = '9005157'
 )
-ops.append(cl0_subdivision_op)
+ops.append(cl4_subdivision_op)
 
-# Add CL0 OTHERS (negative)
+# Add CL4 OTHERS (negative)
 ops.append(create_listing_group_unit(
-    parent=cl0_subdivision_tmp,
-    dimension=dim_cl0_others,
+    parent=cl4_subdivision_tmp,
+    dimension=dim_cl4_others,
     negative=True
 ))
 
 # Add CL3 OTHERS (positive, inherits bid)
 ops.append(create_listing_group_unit(
-    parent=cl0_subdivision_tmp,
+    parent=cl4_subdivision_tmp,
     dimension=dim_cl3_others,
     negative=False,
-    bid=original_bid  # Preserve the bid from CL0 unit
+    bid=original_bid  # Preserve the bid from CL4 unit
 ))
 
 # Add CL3 shop exclusion (negative)
 ops.append(create_listing_group_unit(
-    parent=cl0_subdivision_actual,  # From mutate response
+    parent=cl4_subdivision_actual,  # From mutate response
     dimension=dim_cl3_shop,
     negative=True
 ))
 
 # New structure:
-# ROOT → CL1='a' [SUBDIVISION] → CL0='9005157' [SUBDIVISION]
-#                                  ├─ CL0 OTHERS [UNIT, negative]
+# ROOT → CL1='a' [SUBDIVISION] → CL4='9005157' [SUBDIVISION]
+#                                  ├─ CL4 OTHERS [UNIT, negative]
 #                                  ├─ CL3 OTHERS [UNIT, positive, bid=1.00€]
 #                                  └─ CL3='shop.nl' [UNIT, negative]
 ```
