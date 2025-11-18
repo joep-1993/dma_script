@@ -101,6 +101,7 @@ COL_MAINCAT_ID = 3     # Column D: maincat_id
 COL_CUSTOM_LABEL_1 = 4 # Column E: custom label 1
 COL_BUDGET = 5         # Column F: budget
 COL_STATUS = 6         # Column G: Status (TRUE/FALSE)
+COL_ERROR = 7          # Column H: Error message (when status is FALSE)
 
 # Column indices (0-based) - EXCLUSION SHEET (uitsluiten) - OLD STRUCTURE
 COL_EX_SHOP_NAME = 0      # Column A: Shop name
@@ -109,6 +110,7 @@ COL_EX_CAT_UITSLUITEN = 2 # Column C: cat_uitsluiten
 COL_EX_DIEPSTE_CAT_ID = 3 # Column D: Diepste cat ID
 COL_EX_CUSTOM_LABEL_1 = 4 # Column E: custom label 1
 COL_EX_STATUS = 5         # Column F: Status (TRUE/FALSE)
+COL_EX_ERROR = 6          # Column G: Error message (when status is FALSE)
 
 
 # ============================================================================
@@ -367,7 +369,7 @@ def rebuild_tree_with_custom_label_3_inclusion(
 
     # 2. Custom Label 3 OTHERS (negative - blocks all other shops)
     dim_cl3_others = client.get_type("ListingDimensionInfo")
-    dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2  # INDEX2 = Custom Label 3
+    dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3  # INDEX3 = Custom Label 3
     # Don't set value - OTHERS case
 
     ops1.append(
@@ -391,7 +393,7 @@ def rebuild_tree_with_custom_label_3_inclusion(
     ops2 = []
 
     dim_shop = client.get_type("ListingDimensionInfo")
-    dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2  # INDEX2 = Custom Label 3
+    dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3  # INDEX3 = Custom Label 3
     dim_shop.product_custom_attribute.value = shop_name
 
     ops2.append(
@@ -458,9 +460,9 @@ def rebuild_tree_with_custom_label_3_exclusion(
         results = list(ga_service.search(customer_id=customer_id, query=query))
     except Exception as e:
         print(f"   ❌ Error reading existing tree: {e}")
-        return
+        raise  # Re-raise exception so calling code can handle it properly
 
-    # Step 2: Collect ALL custom label structures to preserve (EXCEPT CL3/INDEX2)
+    # Step 2: Collect ALL custom label structures to preserve (EXCEPT CL2/INDEX2 and CL3/INDEX3)
     custom_label_structures = []
     custom_label_subdivisions = []
 
@@ -475,8 +477,9 @@ def rebuild_tree_with_custom_label_3_exclusion(
                 index_name = case_val.product_custom_attribute.index.name
                 value = case_val.product_custom_attribute.value
 
-                # Skip Custom Label 3 (INDEX2) - we're replacing it
-                if index_name == 'INDEX2':
+                # Skip Custom Label 2 (INDEX2) and Custom Label 3 (INDEX3) - we're replacing them
+                # INDEX2 is the old (incorrect) shop name targeting, INDEX3 is the new (correct) one
+                if index_name == 'INDEX2' or index_name == 'INDEX3':
                     continue
 
                 # Skip OTHERS cases (empty value)
@@ -645,7 +648,7 @@ def rebuild_tree_with_custom_label_3_exclusion(
 
             # Add CL3 OTHERS under this CL0 subdivision
             dim_cl3_others = client.get_type("ListingDimensionInfo")
-            dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
+            dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
             ops1.append(
                 create_listing_group_unit_biddable(
                     client=client,
@@ -675,7 +678,7 @@ def rebuild_tree_with_custom_label_3_exclusion(
     else:
         # No CL0 units - just add CL3 directly under deepest subdivision
         dim_cl3_others = client.get_type("ListingDimensionInfo")
-        dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
+        dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
         ops1.append(
             create_listing_group_unit_biddable(
                 client=client,
@@ -693,7 +696,7 @@ def rebuild_tree_with_custom_label_3_exclusion(
         resp1 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
     except Exception as e:
         print(f"   ❌ Error rebuilding tree: {e}")
-        return
+        raise  # Re-raise exception so calling code can handle it properly
 
     time.sleep(0.5)
 
@@ -715,7 +718,7 @@ def rebuild_tree_with_custom_label_3_exclusion(
             cl0_subdivision_actual = resp1.results[base_index + (i * 2)].resource_name
 
             dim_shop = client.get_type("ListingDimensionInfo")
-            dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
+            dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
             dim_shop.product_custom_attribute.value = shop_name
             ops2.append(
                 create_listing_group_unit_biddable(
@@ -741,7 +744,7 @@ def rebuild_tree_with_custom_label_3_exclusion(
             deepest_subdivision_actual = resp1.results[0].resource_name  # ROOT
 
         dim_shop = client.get_type("ListingDimensionInfo")
-        dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
+        dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
         dim_shop.product_custom_attribute.value = shop_name
         ops2.append(
             create_listing_group_unit_biddable(
@@ -759,7 +762,7 @@ def rebuild_tree_with_custom_label_3_exclusion(
         agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
     except Exception as e:
         print(f"   ❌ Error adding shop exclusion: {e}")
-        return
+        raise  # Re-raise exception so calling code can handle it properly
 
     preserved_count = len(custom_label_structures)
     if preserved_count > 0:
@@ -780,21 +783,21 @@ def build_listing_tree_for_inclusion(
     """
     Build listing tree for inclusion logic (NEW STRUCTURE):
 
-    Tree structure (matches example_functions.txt pattern):
+    Tree structure:
     ROOT (subdivision)
-    ├─ Custom Label 1 = custom_label_1 (subdivision) [a/b/c]
-    │  ├─ Custom Label 1 OTHERS (unit, negative)
+    ├─ Custom Label 3 = shop_name (subdivision)
+    │  ├─ Custom Label 3 OTHERS (unit, negative)
     │  └─ Custom Label 4 = maincat_id (subdivision)
     │     ├─ Custom Label 4 OTHERS (unit, negative)
-    │     ├─ Custom Label 3 = shop_name (unit, biddable, positive) ← Added in MUTATE 2
-    │     └─ Custom Label 3 OTHERS (unit, negative) ← Created in MUTATE 1 with temp name
-    └─ Custom Label 1 OTHERS (unit, negative)
+    │     ├─ Custom Label 1 = custom_label_1 (unit, biddable, positive) ← Added in MUTATE 2
+    │     └─ Custom Label 1 OTHERS (unit, negative) ← Created in MUTATE 1 with temp name
+    └─ Custom Label 3 OTHERS (unit, negative)
 
     CRITICAL: Google Ads requires that when you create a SUBDIVISION, you must
     provide its OTHERS case in the SAME mutate operation using temporary resource names.
 
-    MUTATE 1: Create root + CL1 subdivision + CL0 subdivision + all OTHERS cases
-    MUTATE 2: Add positive shop_name target under maincat subdivision
+    MUTATE 1: Create root + CL3 subdivision + CL4 subdivision + all OTHERS cases
+    MUTATE 2: Add positive custom_label_1 target under maincat subdivision
 
     Args:
         client: Google Ads client
@@ -805,7 +808,7 @@ def build_listing_tree_for_inclusion(
         shop_name: Shop name to target (custom label 3)
         default_bid_micros: Default bid in micros
     """
-    print(f"      Building tree: CL1={custom_label_1}, Maincat ID={maincat_id}, Shop={shop_name}")
+    print(f"      Building tree: Shop={shop_name}, Maincat ID={maincat_id}, CL1={custom_label_1}")
 
     # Remove existing tree if any
     safe_remove_entire_listing_tree(client, customer_id, ad_group_id)
@@ -813,7 +816,7 @@ def build_listing_tree_for_inclusion(
 
     agc_service = client.get_service("AdGroupCriterionService")
 
-    # MUTATE 1: Create root + CL1 subdivision + CL0 subdivision + all OTHERS cases
+    # MUTATE 1: Create root + CL3 subdivision + CL4 subdivision + all OTHERS cases
     # CRITICAL: When creating a subdivision, you MUST provide its OTHERS case in the SAME mutate
     ops1 = []
 
@@ -828,25 +831,25 @@ def build_listing_tree_for_inclusion(
     root_tmp = root_op.create.resource_name
     ops1.append(root_op)
 
-    # 2. Custom Label 1 subdivision (Custom Label 1 = a/b/c)
-    dim_cl1 = client.get_type("ListingDimensionInfo")
-    dim_cl1.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX1  # INDEX1 = Custom Label 1
-    dim_cl1.product_custom_attribute.value = str(custom_label_1)
+    # 2. Custom Label 3 subdivision (Custom Label 3 = shop_name)
+    dim_cl3 = client.get_type("ListingDimensionInfo")
+    dim_cl3.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3  # INDEX3 = Custom Label 3
+    dim_cl3.product_custom_attribute.value = str(shop_name)
 
-    cl1_subdivision_op = create_listing_group_subdivision(
+    cl3_subdivision_op = create_listing_group_subdivision(
         client=client,
         customer_id=customer_id,
         ad_group_id=ad_group_id,
         parent_ad_group_criterion_resource_name=root_tmp,
-        listing_dimension_info=dim_cl1
+        listing_dimension_info=dim_cl3
     )
-    cl1_subdivision_tmp = cl1_subdivision_op.create.resource_name
-    ops1.append(cl1_subdivision_op)
+    cl3_subdivision_tmp = cl3_subdivision_op.create.resource_name
+    ops1.append(cl3_subdivision_op)
 
-    # 3. Custom Label 1 OTHERS (negative - blocks other CL1 values)
+    # 3. Custom Label 3 OTHERS (negative - blocks other shops)
     # This is a child of ROOT and satisfies the OTHERS requirement for root
-    dim_cl1_others = client.get_type("ListingDimensionInfo")
-    dim_cl1_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX1
+    dim_cl3_others = client.get_type("ListingDimensionInfo")
+    dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
     # Don't set value - OTHERS case
 
     ops1.append(
@@ -855,14 +858,14 @@ def build_listing_tree_for_inclusion(
             customer_id=customer_id,
             ad_group_id=ad_group_id,
             parent_ad_group_criterion_resource_name=root_tmp,
-            listing_dimension_info=dim_cl1_others,
+            listing_dimension_info=dim_cl3_others,
             targeting_negative=True,  # NEGATIVE
             cpc_bid_micros=None
         )
     )
 
     # 4. Maincat ID subdivision (Custom Label 4 = maincat_id)
-    # This is a child of CL1 subdivision (using TEMP name)
+    # This is a child of CL3 subdivision (using TEMP name)
     dim_maincat = client.get_type("ListingDimensionInfo")
     dim_maincat.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX4  # INDEX4 = Custom Label 4
     dim_maincat.product_custom_attribute.value = str(maincat_id)
@@ -871,14 +874,14 @@ def build_listing_tree_for_inclusion(
         client=client,
         customer_id=customer_id,
         ad_group_id=ad_group_id,
-        parent_ad_group_criterion_resource_name=cl1_subdivision_tmp,  # Under CL1, not ROOT!
+        parent_ad_group_criterion_resource_name=cl3_subdivision_tmp,  # Under CL3, not ROOT!
         listing_dimension_info=dim_maincat
     )
     maincat_subdivision_tmp = maincat_subdivision_op.create.resource_name
     ops1.append(maincat_subdivision_op)
 
     # 5. Custom Label 4 OTHERS (negative - blocks other categories)
-    # This is a child of CL1 subdivision and satisfies the OTHERS requirement for CL1
+    # This is a child of CL3 subdivision and satisfies the OTHERS requirement for CL3
     dim_cl4_others = client.get_type("ListingDimensionInfo")
     dim_cl4_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX4
     # Don't set value - OTHERS case
@@ -888,17 +891,17 @@ def build_listing_tree_for_inclusion(
             client=client,
             customer_id=customer_id,
             ad_group_id=ad_group_id,
-            parent_ad_group_criterion_resource_name=cl1_subdivision_tmp,  # Child of CL1
+            parent_ad_group_criterion_resource_name=cl3_subdivision_tmp,  # Child of CL3
             listing_dimension_info=dim_cl4_others,
             targeting_negative=True,  # NEGATIVE
             cpc_bid_micros=None
         )
     )
 
-    # 6. Custom Label 3 OTHERS (negative - blocks other shops)
+    # 6. Custom Label 1 OTHERS (negative - blocks other CL1 values)
     # This is a child of maincat_id subdivision (using TEMP name) and satisfies its OTHERS requirement
-    dim_cl3_others = client.get_type("ListingDimensionInfo")
-    dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2
+    dim_cl1_others = client.get_type("ListingDimensionInfo")
+    dim_cl1_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX1
     # Don't set value - OTHERS case
 
     ops1.append(
@@ -907,25 +910,25 @@ def build_listing_tree_for_inclusion(
             customer_id=customer_id,
             ad_group_id=ad_group_id,
             parent_ad_group_criterion_resource_name=maincat_subdivision_tmp,  # Using TEMP name!
-            listing_dimension_info=dim_cl3_others,
-            targeting_negative=True,  # NEGATIVE - block other shops
+            listing_dimension_info=dim_cl1_others,
+            targeting_negative=True,  # NEGATIVE - block other CL1 values
             cpc_bid_micros=None
         )
     )
 
     # Execute first mutate
     resp1 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
-    maincat_subdivision_actual = resp1.results[3].resource_name  # Fourth result is maincat subdivision (0=root, 1=cl1, 2=cl1_others, 3=cl0)
+    maincat_subdivision_actual = resp1.results[3].resource_name  # Fourth result is maincat subdivision (0=root, 1=cl3, 2=cl3_others, 3=cl4)
     time.sleep(0.5)
 
-    # MUTATE 2: Under maincat_id, add the positive shop_name target
-    # Note: CL3 OTHERS was already created in MUTATE 1
+    # MUTATE 2: Under maincat_id, add the positive custom_label_1 target
+    # Note: CL1 OTHERS was already created in MUTATE 1
     ops2 = []
 
-    # Shop name (Custom Label 3 = shop_name) - POSITIVE target
-    dim_shop = client.get_type("ListingDimensionInfo")
-    dim_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX2  # INDEX2 = Custom Label 3
-    dim_shop.product_custom_attribute.value = shop_name
+    # Custom Label 1 (Custom Label 1 = custom_label_1) - POSITIVE target
+    dim_cl1 = client.get_type("ListingDimensionInfo")
+    dim_cl1.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX1  # INDEX1 = Custom Label 1
+    dim_cl1.product_custom_attribute.value = str(custom_label_1)
 
     ops2.append(
         create_listing_group_unit_biddable(
@@ -933,15 +936,15 @@ def build_listing_tree_for_inclusion(
             customer_id=customer_id,
             ad_group_id=ad_group_id,
             parent_ad_group_criterion_resource_name=maincat_subdivision_actual,
-            listing_dimension_info=dim_shop,
-            targeting_negative=False,  # POSITIVE - target this shop
+            listing_dimension_info=dim_cl1,
+            targeting_negative=False,  # POSITIVE - target this CL1 value
             cpc_bid_micros=10_000  # 1 cent = €0.01 = 10,000 micros
         )
     )
 
     # Execute second mutate
     agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
-    print(f"      ✅ Tree created: CL1 '{custom_label_1}' → Maincat '{maincat_id}' → Shop '{shop_name}'")
+    print(f"      ✅ Tree created: Shop '{shop_name}' → Maincat '{maincat_id}' → CL1 '{custom_label_1}'")
 
 
 # ============================================================================
@@ -1018,6 +1021,7 @@ def process_inclusion_sheet(
         if not shop_name or not maincat or not maincat_id or not custom_label_1:
             print(f"   ⚠️  [Row {idx}] Missing required fields (shop_name/maincat/maincat_id/custom_label_1), skipping")
             row[COL_STATUS].value = False
+            row[COL_ERROR].value = "Missing required fields (shop_name/maincat/maincat_id/custom_label_1)"
             continue
 
         # NEW: Group by (maincat, custom_label_1) only - multiple shops per campaign
@@ -1120,6 +1124,7 @@ def process_inclusion_sheet(
             # NEW: Create multiple ad groups - one for each unique shop
             print(f"\n   Step 2: Creating ad groups for {len(unique_shops)} shop(s)...")
             shops_processed_successfully = []
+            shop_errors = {}  # Track errors per shop
 
             for shop_idx, (shop_name, shop_id) in enumerate(unique_shops.items(), start=1):
                 print(f"\n   ──── Shop {shop_idx}/{len(unique_shops)}: {shop_name} ────")
@@ -1164,25 +1169,35 @@ def process_inclusion_sheet(
                     time.sleep(1)
 
                 except Exception as e:
-                    print(f"      ❌ Failed to process shop {shop_name}: {e}")
+                    error_msg = str(e)
+                    print(f"      ❌ Failed to process shop {shop_name}: {error_msg}")
+                    shop_errors[shop_name] = error_msg
                     # Continue with next shop instead of failing entire group
 
             # Mark rows as successful/failed based on their shop
             for row_data in rows_in_group:
                 if row_data['shop_name'] in shops_processed_successfully:
                     row_data['row_obj'][COL_STATUS].value = True
+                    row_data['row_obj'][COL_ERROR].value = ""  # Clear error message on success
                 else:
                     row_data['row_obj'][COL_STATUS].value = False
+                    # Add error message if available
+                    if row_data['shop_name'] in shop_errors:
+                        row_data['row_obj'][COL_ERROR].value = shop_errors[row_data['shop_name']]
+                    else:
+                        row_data['row_obj'][COL_ERROR].value = "Failed to process shop"
 
             if len(shops_processed_successfully) > 0:
                 successful_groups += 1
                 print(f"\n   ✅ GROUP {group_idx} COMPLETED: {len(shops_processed_successfully)}/{len(unique_shops)} shops processed")
 
         except Exception as e:
-            print(f"\n   ❌ GROUP {group_idx} FAILED: {e}")
+            error_msg = str(e)
+            print(f"\n   ❌ GROUP {group_idx} FAILED: {error_msg}")
             # Mark all rows in this group as failed
             for row_data in rows_in_group:
                 row_data['row_obj'][COL_STATUS].value = False
+                row_data['row_obj'][COL_ERROR].value = f"Group failed: {error_msg}"
 
     print(f"\n{'='*70}")
     print(f"INCLUSION SHEET SUMMARY: {successful_groups}/{total_groups} groups processed successfully")
@@ -1192,7 +1207,9 @@ def process_inclusion_sheet(
 def process_exclusion_sheet(
     client: GoogleAdsClient,
     workbook: openpyxl.Workbook,
-    customer_id: str
+    customer_id: str,
+    save_interval: int = 50,
+    rate_limit_seconds: float = 0.5
 ):
     """
     Process the 'uitsluiten' (exclusion) sheet.
@@ -1207,9 +1224,14 @@ def process_exclusion_sheet(
         client: Google Ads client
         workbook: Excel workbook
         customer_id: Customer ID
+        save_interval: Save workbook every N campaigns (default: 50)
+        rate_limit_seconds: Delay between campaigns to avoid API rate limits (default: 0.5)
     """
     print(f"\n{'='*70}")
     print(f"PROCESSING EXCLUSION SHEET: '{SHEET_EXCLUSION}'")
+    print(f"{'='*70}")
+    print(f"  Save interval: Every {save_interval} campaigns")
+    print(f"  Rate limit: {rate_limit_seconds}s delay between campaigns")
     print(f"{'='*70}\n")
 
     try:
@@ -1221,6 +1243,7 @@ def process_exclusion_sheet(
     # Skip header row (row 1)
     total_rows = 0
     success_count = 0
+    processed_since_save = 0
 
     for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=False), start=2):
         # Check if status column (F) is empty - if so, this is where we start processing
@@ -1246,6 +1269,9 @@ def process_exclusion_sheet(
         if not shop_name or not cat_uitsluiten or not custom_label_1:
             print(f"   ⚠️  Missing required fields, skipping row")
             row[COL_EX_STATUS].value = False
+            # Only write to error column if it exists
+            if len(row) > COL_EX_ERROR:
+                row[COL_EX_ERROR].value = "Missing required fields (shop_name/cat_uitsluiten/custom_label_1)"
             continue
 
         # Build campaign name pattern
@@ -1257,6 +1283,9 @@ def process_exclusion_sheet(
         if not campaign:
             print(f"   ❌ Campaign not found")
             row[COL_EX_STATUS].value = False
+            # Only write to error column if it exists
+            if len(row) > COL_EX_ERROR:
+                row[COL_EX_ERROR].value = f"Campaign not found: {campaign_pattern}"
             continue
 
         print(f"   ✅ Found campaign: {campaign['name']} (ID: {campaign['id']})")
@@ -1266,6 +1295,9 @@ def process_exclusion_sheet(
         if not ad_group:
             print(f"   ❌ No ad group found in campaign")
             row[COL_EX_STATUS].value = False
+            # Only write to error column if it exists
+            if len(row) > COL_EX_ERROR:
+                row[COL_EX_ERROR].value = f"No ad group found in campaign: {campaign['name']}"
             continue
 
         print(f"   ✅ Found ad group: {ad_group['name']} (ID: {ad_group['id']})")
@@ -1280,12 +1312,44 @@ def process_exclusion_sheet(
                 default_bid_micros=DEFAULT_BID_MICROS
             )
             row[COL_EX_STATUS].value = True
+            # Only write to error column if it exists
+            if len(row) > COL_EX_ERROR:
+                row[COL_EX_ERROR].value = ""  # Clear error message on success
             success_count += 1
+            processed_since_save += 1
             print(f"   ✅ SUCCESS - Row {idx} completed")
 
         except Exception as e:
-            print(f"   ❌ Error rebuilding tree: {e}")
+            error_msg = str(e)
+            print(f"   ❌ Error rebuilding tree: {error_msg}")
             row[COL_EX_STATUS].value = False
+            # Only write to error column if it exists
+            if len(row) > COL_EX_ERROR:
+                row[COL_EX_ERROR].value = f"Error rebuilding tree: {error_msg[:500]}"  # Limit error message length
+            processed_since_save += 1
+
+        # Incremental save every N campaigns
+        if processed_since_save >= save_interval:
+            print(f"\n   💾 Saving progress... ({success_count}/{total_rows} successful so far)")
+            try:
+                workbook.save(EXCEL_FILE_PATH)
+                print(f"   ✅ Progress saved successfully")
+                processed_since_save = 0
+            except Exception as save_error:
+                print(f"   ⚠️  Error saving file: {save_error}")
+                print(f"   ⚠️  Continuing without save...")
+
+        # Rate limiting to avoid overwhelming Google Ads API
+        if rate_limit_seconds > 0:
+            time.sleep(rate_limit_seconds)
+
+    # Final save
+    print(f"\n   💾 Final save...")
+    try:
+        workbook.save(EXCEL_FILE_PATH)
+        print(f"   ✅ Final save successful")
+    except Exception as save_error:
+        print(f"   ⚠️  Error on final save: {save_error}")
 
     print(f"\n{'='*70}")
     print(f"EXCLUSION SHEET SUMMARY: {success_count}/{total_rows} rows processed successfully")
@@ -1326,12 +1390,15 @@ def main():
         process_inclusion_sheet(client, workbook, CUSTOMER_ID)
     except Exception as e:
         print(f"❌ Error processing inclusion sheet: {e}")
-
+        
+    '''
     # Process exclusion sheet
     try:
         process_exclusion_sheet(client, workbook, CUSTOMER_ID)
     except Exception as e:
         print(f"❌ Error processing exclusion sheet: {e}")
+    '''
+
     # Save workbook with updates
     print(f"\n{'='*70}")
     print("SAVING RESULTS")

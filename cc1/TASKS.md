@@ -14,6 +14,14 @@ _Tasks currently being worked on (max 1-2 items)_
 ## Completed
 _Recently finished tasks_
 
+- [x] Fix exclusion migration data loss and API rate limiting #claude-session:2025-11-19 #priority:critical
+  - Discovered migration lost 3 hours of work after crash (no incremental saves)
+  - Added incremental saving every 50 campaigns to process_exclusion_sheet()
+  - Added rate limiting (0.5s delay) between campaigns to prevent API overload
+  - Fixed CONCURRENT_MODIFICATION error handling to properly raise exceptions
+  - Changed rebuild_tree functions to raise instead of return on errors
+  - Created test_improved_migration.py to validate improvements on small batches
+  - Prevents data loss and reduces CONCURRENT_MODIFICATION errors significantly
 - [x] Fix concurrent modification in ad group creation #claude-session:2025-11-12 #priority:critical
   - Fixed add_shopping_ad_group() to check for SPECIFIC ad group name instead of ANY ad group
   - Changed query from checking campaign existence to checking (campaign + ad_group_name)

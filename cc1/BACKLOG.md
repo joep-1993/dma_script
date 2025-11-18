@@ -26,6 +26,13 @@ _What are we building and why?_
 - [ ] Monitoring
 
 ## Technical Debt
+- [ ] Optimize rate limiting and batch size for faster migration #priority:medium
+  - Current 0.5s delay may be too conservative for API capabilities
+  - Test with 0.3s or 0.2s to find optimal balance
+  - Consider adaptive rate limiting based on error rates
+  - Could reduce 866K campaign migration from 5-10 days to 3-5 days
+  - Monitor CONCURRENT_MODIFICATION errors to tune
+  _#claude-session:2025-11-19_
 - [ ] Optimize listing tree operations with bulk mutations #priority:medium
   - Current implementation uses separate mutate operations for each level
   - Could combine more operations into single mutate where possible
@@ -63,6 +70,13 @@ _What are we building and why?_
 ## Ideas Parking Lot
 _Capture ideas for future consideration_
 
+- Progress monitoring dashboard for long-running migrations
+  - Web UI to monitor migration progress in real-time
+  - Show campaigns processed, success rate, estimated time remaining
+  - Display incremental save checkpoints
+  - Alert on high error rates or API issues
+  - Useful for 5-10 day migration processes
+  _#claude-session:2025-11-19_
 - Dynamic bid strategy assignment from Excel
   - Add column to specify bid strategy per row instead of global mapping
   - Allow override of default bid strategy based on custom label 1

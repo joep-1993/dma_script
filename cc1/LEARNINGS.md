@@ -17,6 +17,72 @@ docker exec -it <container> bash  # Enter container
 
 ## Common Issues & Solutions
 
+### Migration Data Loss Due to No Incremental Saves
+**Problem**: Large-scale migration lost all progress (3 hours of work) when script crashed with 500 Internal Server Error
+**Symptoms**: Script processed 1,100+ campaigns successfully, marked them as TRUE in memory, but crashed before saving Excel file
+**Root Cause**: `process_exclusion_sheet()` only saved workbook at very end (line 1374). When crash occurred, all in-memory status updates were lost.
+**Impact**: 866,351 campaigns remained to process with 0 successful completions saved
+**Solution**: Implement incremental saving every N campaigns:
+```python
+def process_exclusion_sheet(
+    client, workbook, customer_id,
+    save_interval: int = 50,  # Save every 50 campaigns
+    rate_limit_seconds: float = 0.5  # Delay between campaigns
+):
+    processed_since_save = 0
+
+    for idx, row in enumerate(sheet.iter_rows(min_row=2), start=2):
+        # Process campaign...
+        processed_since_save += 1
+
+        # Incremental save
+        if processed_since_save >= save_interval:
+            print(f"\n   💾 Saving progress...")
+            try:
+                workbook.save(EXCEL_FILE_PATH)
+                print(f"   ✅ Progress saved successfully")
+                processed_since_save = 0
+            except Exception as save_error:
+                print(f"   ⚠️  Error saving: {save_error}")
+
+        # Rate limiting
+        if rate_limit_seconds > 0:
+            time.sleep(rate_limit_seconds)
+
+    # Final save
+    workbook.save(EXCEL_FILE_PATH)
+```
+**Benefits**: Maximum 50 campaigns lost on crash instead of hours of work, progress persists through failures
+**Additional Fix**: Add rate limiting to prevent API overload that causes 500 errors
+_#claude-session:2025-11-19_
+
+### CONCURRENT_MODIFICATION Error Marked as SUCCESS
+**Problem**: When CONCURRENT_MODIFICATION errors occurred, campaigns were incorrectly marked as TRUE (success) in Excel
+**Symptoms**: Excel shows TRUE status but shop exclusion was never applied due to API error
+**Root Cause**: `rebuild_tree_with_custom_label_3_exclusion()` caught exceptions and printed error but returned normally instead of raising
+**Broken Code**:
+```python
+try:
+    agc_service.mutate_ad_group_criteria(operations=ops2)
+except Exception as e:
+    print(f"   ❌ Error adding shop exclusion: {e}")
+    return  # Silent failure - calling code thinks it succeeded!
+```
+**Fixed Code**:
+```python
+try:
+    agc_service.mutate_ad_group_criteria(operations=ops2)
+except Exception as e:
+    print(f"   ❌ Error adding shop exclusion: {e}")
+    raise  # Re-raise so calling code marks as FALSE
+```
+**Locations Fixed**:
+- Line 463: Error reading existing tree
+- Line 699: Error rebuilding tree (first mutate)
+- Line 765: Error adding shop exclusion (second mutate)
+**Impact**: Now only campaigns that fully succeed are marked TRUE, failed campaigns marked FALSE with error message
+_#claude-session:2025-11-19_
+
 ### Google Ads CONCURRENT_MODIFICATION Error
 **Problem**: Multiple shops trying to modify the same ad group simultaneously causes CONCURRENT_MODIFICATION error
 **Symptoms**: When processing multiple shops in same campaign, both shops get assigned the same ad group ID, leading to concurrent modification conflicts
@@ -315,6 +381,70 @@ campaign.bidding_strategy = bid_strategy_resource  # Portfolio strategy from MCC
 **Benefits**: Centralized bid strategy management in MCC, applies to all client accounts
 **Use Case**: Multiple client accounts sharing same bid strategies defined at MCC level
 _#claude-session:2025-11-12_
+
+### Incremental Saving for Long-Running Excel Processing
+**Pattern**: Save workbook periodically during long-running operations to prevent data loss on crashes
+**Implementation**:
+```python
+def process_large_dataset(workbook, save_interval=50):
+    processed_count = 0
+
+    for idx, row in enumerate(sheet.iter_rows(min_row=2), start=2):
+        # Process row...
+        try:
+            # Do work
+            row[STATUS_COL].value = True
+            processed_count += 1
+        except Exception as e:
+            row[STATUS_COL].value = False
+
+        # Incremental save
+        if processed_count >= save_interval:
+            print(f"💾 Saving progress ({processed_count} processed)...")
+            try:
+                workbook.save(EXCEL_FILE_PATH)
+                processed_count = 0  # Reset counter
+            except Exception as save_error:
+                print(f"⚠️  Save failed: {save_error}")
+                # Continue processing even if save fails
+
+    # Final save
+    workbook.save(EXCEL_FILE_PATH)
+```
+**Benefits**:
+- Limits data loss to `save_interval` rows on crash (vs entire run)
+- Enables recovery from long-running processes
+- Provides progress checkpoints for debugging
+**Trade-offs**: More disk I/O, but negligible compared to API operations
+**Use Case**: Processing 866,351 campaigns where entire run takes days
+_#claude-session:2025-11-19_
+
+### Rate Limiting for Google Ads API Operations
+**Pattern**: Add configurable delays between API operations to prevent overwhelming the API
+**Implementation**:
+```python
+def process_campaigns(client, campaigns, rate_limit_seconds=0.5):
+    for campaign in campaigns:
+        # Process campaign...
+        try:
+            process_single_campaign(client, campaign)
+        except Exception as e:
+            handle_error(e)
+
+        # Rate limiting - prevent API overload
+        if rate_limit_seconds > 0:
+            time.sleep(rate_limit_seconds)
+```
+**Benefits**:
+- Reduces CONCURRENT_MODIFICATION errors
+- Prevents 500 Internal Server Errors from API overload
+- More reliable for large-scale operations
+**Recommended Values**:
+- Conservative: 0.5-1.0 seconds (safer, slower)
+- Moderate: 0.3-0.5 seconds (balanced)
+- Aggressive: 0.1-0.3 seconds (faster, riskier)
+**Use Case**: Processing thousands of campaigns where API rate limits could be exceeded
+_#claude-session:2025-11-19_
 
 ### Resumable Excel Processing
 **Pattern**: Skip rows that have already been processed to enable resuming from failures

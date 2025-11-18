@@ -16,10 +16,11 @@ dma-shop-campaigns/
 │   ├── LEARNINGS.md              # Knowledge capture
 │   ├── BACKLOG.md                # Future planning
 │   └── PROJECT_INDEX.md          # This file
-├── campaign_processor.py         # ⭐ Main script - Google Ads campaign automation
+├── campaign_processor.py         # ⭐ Main script - Google Ads campaign automation (with incremental saving & rate limiting)
 ├── google_ads_helpers.py         # Helper functions for listing tree operations
 ├── test_google_ads_init.py       # Test script for credentials verification
 ├── test_campaign_processor.py    # Test script for setup validation
+├── test_improved_migration.py    # Test script for validating migration improvements (incremental saves, rate limiting)
 ├── check_adgroup_structure.py    # Diagnostic: Check ad group tree structure
 ├── test_exclusion_fix.py         # Diagnostic: Test exclusion logic on specific ad group
 ├── EXCLUSION_LOGIC_FIX_SUMMARY.md # Documentation: Exclusion logic fix details
@@ -124,6 +125,9 @@ python3 campaign_processor.py
    - Converts positive CL4 units to subdivisions when adding CL3 exclusions
    - Final structure: ROOT → CL1 → CL4 → CL3 (hierarchical, all existing targeting preserved)
    - Updates column F with TRUE/FALSE per row
+   - **NEW**: Incremental saving every 50 campaigns (configurable via `save_interval` parameter)
+   - **NEW**: Rate limiting with 0.5s delay between campaigns (configurable via `rate_limit_seconds` parameter)
+   - **NEW**: Proper error propagation - only marks TRUE when fully successful
 5. Saves results back to Excel file
 
 **Key Features**:
