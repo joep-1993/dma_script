@@ -446,6 +446,39 @@ def process_campaigns(client, campaigns, rate_limit_seconds=0.5):
 **Use Case**: Processing thousands of campaigns where API rate limits could be exceeded
 _#claude-session:2025-11-19_
 
+### Optimal Rate Limiting and Smart Delay Strategy
+**Finding**: Tested 0.2s rate limiting on 872,571 campaign migration and discovered optimal strategy
+**Results**:
+- 1,766 campaigns successfully processed (26.1% success rate on existing campaigns)
+- 5,008 campaigns failed with CONCURRENT_MODIFICATION (0.2s still too fast for some operations)
+- 865,797 campaigns "not found" (quickly skipped)
+- Total processing time: ~8-9 hours (down from estimated 5-10 days)
+**Key Optimization**: Only apply rate limiting AFTER successful operations, not after errors or "not found":
+```python
+try:
+    # Process campaign
+    rebuild_tree_with_custom_label_3_exclusion(...)
+    row[COL_EX_STATUS].value = True
+
+    # Rate limiting ONLY after success (moved inside try block)
+    if rate_limit_seconds > 0:
+        time.sleep(rate_limit_seconds)
+
+except Exception as e:
+    row[COL_EX_STATUS].value = False
+    # NO rate limiting after errors - fail fast
+```
+**Impact**: This optimization provided ~10x speedup overall because:
+- 99.2% of rows (865,797) were "campaign not found" and skipped instantly with no delay
+- Only 0.8% of rows (6,774 existing campaigns) needed rate limiting
+- Eliminated unnecessary delays for 99%+ of rows
+**Trade-offs**:
+- 0.2s still causes 74% failure rate on existing campaigns (5,008/6,774)
+- Failed campaigns marked FALSE and can be retried later with slower rate
+- Acceptable trade-off for massive speed improvement on large datasets
+**Recommendation**: Use smart rate limiting (delays only after success) + 0.2s for fast bulk operations where retry is acceptable
+_#claude-session:2025-11-19_
+
 ### Resumable Excel Processing
 **Pattern**: Skip rows that have already been processed to enable resuming from failures
 **Implementation**:
@@ -613,4 +646,4 @@ _#claude-session:2025-11-11_
 
 ---
 _Created from template: 2025-11-10_
-_Updated: 2025-11-12_
+_Updated: 2025-11-19_

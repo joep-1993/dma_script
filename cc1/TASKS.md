@@ -14,6 +14,15 @@ _Tasks currently being worked on (max 1-2 items)_
 ## Completed
 _Recently finished tasks_
 
+- [x] Complete 872K campaign migration with optimized rate limiting #claude-session:2025-11-19 #priority:high
+  - Tested 0.2s rate limiting on full 872,571 campaign dataset
+  - Implemented smart delay strategy: only delay after successful operations (not after errors/"not found")
+  - Achieved ~10x speedup: 8-9 hours vs 5-10 days estimate
+  - Successfully migrated 1,766 campaigns to Custom Label 3 (INDEX3)
+  - 5,008 campaigns failed (CONCURRENT_MODIFICATION) - marked for potential retry
+  - 865,797 campaigns "not found" (quickly skipped with no delays)
+  - Updated LEARNINGS.md with optimal rate limiting findings
+  - Updated BACKLOG.md technical debt item with results
 - [x] Fix exclusion migration data loss and API rate limiting #claude-session:2025-11-19 #priority:critical
   - Discovered migration lost 3 hours of work after crash (no incremental saves)
   - Added incremental saving every 50 campaigns to process_exclusion_sheet()

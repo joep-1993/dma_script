@@ -1021,7 +1021,9 @@ def process_inclusion_sheet(
         if not shop_name or not maincat or not maincat_id or not custom_label_1:
             print(f"   ⚠️  [Row {idx}] Missing required fields (shop_name/maincat/maincat_id/custom_label_1), skipping")
             row[COL_STATUS].value = False
-            row[COL_ERROR].value = "Missing required fields (shop_name/maincat/maincat_id/custom_label_1)"
+            # Only write to error column if it exists
+            if len(row) > COL_ERROR:
+                row[COL_ERROR].value = "Missing required fields (shop_name/maincat/maincat_id/custom_label_1)"
             continue
 
         # NEW: Group by (maincat, custom_label_1) only - multiple shops per campaign
@@ -1178,14 +1180,17 @@ def process_inclusion_sheet(
             for row_data in rows_in_group:
                 if row_data['shop_name'] in shops_processed_successfully:
                     row_data['row_obj'][COL_STATUS].value = True
-                    row_data['row_obj'][COL_ERROR].value = ""  # Clear error message on success
+                    # Clear error message on success (only if column exists)
+                    if len(row_data['row_obj']) > COL_ERROR:
+                        row_data['row_obj'][COL_ERROR].value = ""
                 else:
                     row_data['row_obj'][COL_STATUS].value = False
-                    # Add error message if available
-                    if row_data['shop_name'] in shop_errors:
-                        row_data['row_obj'][COL_ERROR].value = shop_errors[row_data['shop_name']]
-                    else:
-                        row_data['row_obj'][COL_ERROR].value = "Failed to process shop"
+                    # Add error message if available (only if column exists)
+                    if len(row_data['row_obj']) > COL_ERROR:
+                        if row_data['shop_name'] in shop_errors:
+                            row_data['row_obj'][COL_ERROR].value = shop_errors[row_data['shop_name']]
+                        else:
+                            row_data['row_obj'][COL_ERROR].value = "Failed to process shop"
 
             if len(shops_processed_successfully) > 0:
                 successful_groups += 1
@@ -1197,7 +1202,9 @@ def process_inclusion_sheet(
             # Mark all rows in this group as failed
             for row_data in rows_in_group:
                 row_data['row_obj'][COL_STATUS].value = False
-                row_data['row_obj'][COL_ERROR].value = f"Group failed: {error_msg}"
+                # Only write error message if column exists
+                if len(row_data['row_obj']) > COL_ERROR:
+                    row_data['row_obj'][COL_ERROR].value = f"Group failed: {error_msg}"
 
     print(f"\n{'='*70}")
     print(f"INCLUSION SHEET SUMMARY: {successful_groups}/{total_groups} groups processed successfully")
@@ -1319,6 +1326,10 @@ def process_exclusion_sheet(
             processed_since_save += 1
             print(f"   ✅ SUCCESS - Row {idx} completed")
 
+            # Rate limiting ONLY after successful processing (moved here for optimization)
+            if rate_limit_seconds > 0:
+                time.sleep(rate_limit_seconds)
+
         except Exception as e:
             error_msg = str(e)
             print(f"   ❌ Error rebuilding tree: {error_msg}")
@@ -1327,6 +1338,7 @@ def process_exclusion_sheet(
             if len(row) > COL_EX_ERROR:
                 row[COL_EX_ERROR].value = f"Error rebuilding tree: {error_msg[:500]}"  # Limit error message length
             processed_since_save += 1
+            # NO rate limiting after errors - fail fast
 
         # Incremental save every N campaigns
         if processed_since_save >= save_interval:
@@ -1338,10 +1350,6 @@ def process_exclusion_sheet(
             except Exception as save_error:
                 print(f"   ⚠️  Error saving file: {save_error}")
                 print(f"   ⚠️  Continuing without save...")
-
-        # Rate limiting to avoid overwhelming Google Ads API
-        if rate_limit_seconds > 0:
-            time.sleep(rate_limit_seconds)
 
     # Final save
     print(f"\n   💾 Final save...")
@@ -1390,7 +1398,6 @@ def main():
         process_inclusion_sheet(client, workbook, CUSTOMER_ID)
     except Exception as e:
         print(f"❌ Error processing inclusion sheet: {e}")
-        
     '''
     # Process exclusion sheet
     try:
@@ -1398,7 +1405,6 @@ def main():
     except Exception as e:
         print(f"❌ Error processing exclusion sheet: {e}")
     '''
-
     # Save workbook with updates
     print(f"\n{'='*70}")
     print("SAVING RESULTS")
