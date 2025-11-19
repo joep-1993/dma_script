@@ -14,6 +14,13 @@ _Tasks currently being worked on (max 1-2 items)_
 ## Completed
 _Recently finished tasks_
 
+- [x] Make inclusion script idempotent with existing resource checks #claude-session:2025-11-19 #priority:medium
+  - Modified campaign lookup to search by exact campaign name instead of embedded metadata
+  - Added check for existing campaigns before creation (reuses if found)
+  - Added check for existing ad groups by name within campaign before creation
+  - Fixed GAQL single quote escaping issue (apostrophes in names like "Auto's")
+  - Changed from double single quotes ('') to backslash escaping (\') for GAQL
+  - Script now safe to re-run without creating duplicate campaigns/ad groups
 - [x] Complete 872K campaign migration with optimized rate limiting #claude-session:2025-11-19 #priority:high
   - Tested 0.2s rate limiting on full 872,571 campaign dataset
   - Implemented smart delay strategy: only delay after successful operations (not after errors/"not found")

@@ -192,13 +192,16 @@ def get_bid_strategy_by_name(
     """
     ga_service = client.get_service("GoogleAdsService")
 
+    # Escape single quotes in strategy name for GAQL (replace ' with \')
+    escaped_strategy_name = strategy_name.replace("'", "\\'")
+
     query = f"""
         SELECT
             bidding_strategy.id,
             bidding_strategy.name,
             bidding_strategy.resource_name
         FROM bidding_strategy
-        WHERE bidding_strategy.name = '{strategy_name}'
+        WHERE bidding_strategy.name = '{escaped_strategy_name}'
         LIMIT 1
     """
 
@@ -239,6 +242,9 @@ def get_campaign_by_name_pattern(
     """
     ga_service = client.get_service("GoogleAdsService")
 
+    # Escape single quotes in name pattern for GAQL (replace ' with \')
+    escaped_name_pattern = name_pattern.replace("'", "\\'")
+
     query = f"""
         SELECT
             campaign.id,
@@ -246,7 +252,7 @@ def get_campaign_by_name_pattern(
             campaign.resource_name,
             campaign.status
         FROM campaign
-        WHERE campaign.name LIKE '%{name_pattern}%'
+        WHERE campaign.name LIKE '%{escaped_name_pattern}%'
             AND campaign.status != 'REMOVED'
         LIMIT 1
     """
@@ -1072,7 +1078,7 @@ def process_inclusion_sheet(
         try:
             # NEW: Build campaign name: PLA/{maincat} store_{custom_label_1}
             campaign_name = f"PLA/{maincat} store_{custom_label_1}"
-            print(f"\n   Step 1: Creating/finding campaign: {campaign_name}")
+            print(f"\n   Step 1: Checking for existing campaign or creating new: {campaign_name}")
 
             # Campaign configuration
             merchant_center_account_id = 140784594  # Merchant Center ID
@@ -1121,10 +1127,10 @@ def process_inclusion_sheet(
             if not campaign_resource_name:
                 raise Exception("Failed to create/find campaign")
 
-            print(f"   ✅ Campaign ready: {campaign_resource_name}")
+            print(f"   Campaign resource: {campaign_resource_name}")
 
-            # NEW: Create multiple ad groups - one for each unique shop
-            print(f"\n   Step 2: Creating ad groups for {len(unique_shops)} shop(s)...")
+            # NEW: Check/create multiple ad groups - one for each unique shop
+            print(f"\n   Step 2: Processing ad groups for {len(unique_shops)} shop(s)...")
             shops_processed_successfully = []
             shop_errors = {}  # Track errors per shop
 
@@ -1134,7 +1140,7 @@ def process_inclusion_sheet(
                 try:
                     # Build ad group name: PLA/{shop_name}_{custom_label_1}
                     ad_group_name = f"PLA/{shop_name}_{custom_label_1}"
-                    print(f"      Creating ad group: {ad_group_name}")
+                    print(f"      Checking/creating ad group: {ad_group_name}")
 
                     ad_group_resource_name, was_created = add_shopping_ad_group(
                         client=client,
@@ -1392,7 +1398,7 @@ def main():
     except Exception as e:
         print(f"❌ Error loading Excel file: {e}")
         sys.exit(1)
-
+    '''
     # Process inclusion sheet
     try:
         process_inclusion_sheet(client, workbook, CUSTOMER_ID)
@@ -1404,7 +1410,7 @@ def main():
         process_exclusion_sheet(client, workbook, CUSTOMER_ID)
     except Exception as e:
         print(f"❌ Error processing exclusion sheet: {e}")
-    '''
+
     # Save workbook with updates
     print(f"\n{'='*70}")
     print("SAVING RESULTS")

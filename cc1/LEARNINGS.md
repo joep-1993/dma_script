@@ -17,6 +17,35 @@ docker exec -it <container> bash  # Enter container
 
 ## Common Issues & Solutions
 
+### GAQL Query Fails with Apostrophes in Names
+**Problem**: GAQL queries fail with `INVALID_ARGUMENT` / `UNEXPECTED_INPUT` errors when campaign or ad group names contain apostrophes
+**Symptoms**: Error message shows "unexpected input" at the apostrophe position (e.g., "Error in query: unexpected input \'s store_b\'")
+**Example**: Campaign name "PLA/Auto's store_b" breaks the query
+**Root Cause**: Single quotes in GAQL string literals must be escaped, but the wrong escaping method was used
+**Broken Code**:
+```python
+# WRONG: Using double single quotes (SQL-style escaping)
+escaped_name = campaign_name.replace("'", "''")
+query = f"WHERE campaign.name = '{escaped_name}'"
+# Results in: WHERE campaign.name = 'PLA/Auto''s store_b'
+# GAQL doesn't recognize '' as escaped quote
+```
+**Fixed Code**:
+```python
+# CORRECT: Using backslash escaping (GAQL-style escaping)
+escaped_name = campaign_name.replace("'", "\\'")
+query = f"WHERE campaign.name = '{escaped_name}'"
+# Results in: WHERE campaign.name = 'PLA/Auto\'s store_b'
+# GAQL correctly interprets \' as literal single quote
+```
+**Locations Fixed**:
+- google_ads_helpers.py line 181: Campaign name in exact match query
+- google_ads_helpers.py line 373: Ad group name in lookup query
+- campaign_processor.py line 196: Bid strategy name query
+- campaign_processor.py line 246: Campaign name pattern in LIKE query
+**Impact**: Script now handles any campaign/ad group names with apostrophes (Auto's, Men's, Children's, etc.)
+_#claude-session:2025-11-19_
+
 ### Migration Data Loss Due to No Incremental Saves
 **Problem**: Large-scale migration lost all progress (3 hours of work) when script crashed with 500 Internal Server Error
 **Symptoms**: Script processed 1,100+ campaigns successfully, marked them as TRUE in memory, but crashed before saving Excel file
@@ -618,6 +647,72 @@ ops.append(create_listing_group_unit(
 **Benefits**: Preserves original bid, maintains tree validity, enables deeper nesting
 **Reference**: Study `rebuild_tree_with_label_and_item_ids` in example_functions.txt lines 200-250
 _#claude-session:2025-11-12_
+
+### Idempotent Campaign and Ad Group Creation
+**Pattern**: Check for existing resources before creation to enable safe re-runs without duplicates
+**Use Case**: Inclusion script needs to be re-runnable when adding new shops to existing campaigns
+**Implementation**:
+```python
+def add_standard_shopping_campaign(client, customer_id, campaign_name, ...):
+    google_ads_service = client.get_service("GoogleAdsService")
+
+    # Check if campaign already exists by exact name match
+    escaped_campaign_name = campaign_name.replace("'", "\\'")
+    query = f"""
+        SELECT campaign.id, campaign.resource_name, campaign.status
+        FROM campaign
+        WHERE campaign.name = '{escaped_campaign_name}'
+    """
+    response = google_ads_service.search(customer_id=customer_id, query=query)
+
+    for row in response:
+        if row.campaign.status != client.enums.CampaignStatusEnum.REMOVED:
+            print(f"Campaign '{campaign_name}' already exists. Using existing.")
+            return row.campaign.resource_name  # Reuse existing
+
+    # Only create if not found
+    campaign_operation = client.get_type("CampaignOperation")
+    # ... create campaign ...
+    return campaign_resource_name
+
+def add_shopping_ad_group(client, customer_id, campaign_resource_name, ad_group_name, ...):
+    google_ads_service = client.get_service("GoogleAdsService")
+
+    # Check if ad group exists in this campaign
+    escaped_ad_group_name = ad_group_name.replace("'", "\\'")
+    query = f"""
+        SELECT ad_group.id, ad_group.resource_name
+        FROM ad_group
+        WHERE ad_group.campaign = '{campaign_resource_name}'
+        AND ad_group.name = '{escaped_ad_group_name}'
+        AND ad_group.status != 'REMOVED'
+    """
+    response = google_ads_service.search(customer_id=customer_id, query=query)
+
+    for row in response:
+        print(f"Ad group '{ad_group_name}' already exists. Using existing.")
+        return row.ad_group.resource_name, False  # Reuse existing
+
+    # Only create if not found
+    ad_group_operation = client.get_type("AdGroupOperation")
+    # ... create ad group ...
+    return ad_group_resource_name, True
+```
+**Benefits**:
+- Script can be run multiple times on same data without errors
+- Enables adding new shops to existing campaigns
+- Safe recovery from partial failures
+- Reduces API calls by reusing existing resources
+**Key Points**:
+- Always escape single quotes in names with backslash (\')
+- Check for NOT REMOVED status to avoid reusing deleted resources
+- Query by exact name match for campaigns
+- Query by campaign + name for ad groups (multiple campaigns may have same ad group name)
+**Use Case Example**: Re-running inclusion sheet after adding new shops to existing campaigns will:
+1. Find and reuse existing campaign
+2. Create only the new ad groups for new shops
+3. Build listing trees for new ad groups only
+_#claude-session:2025-11-19_
 
 ### No Build Tools Benefits
 - Edit HTML/CSS/JS → Save → Refresh browser

@@ -176,13 +176,13 @@ def add_standard_shopping_campaign(
     campaign_service = client.get_service("CampaignService")
     google_ads_service = client.get_service("GoogleAdsService")
 
-    # Check if campaign already exists and if it is removed
-    query = f""" 
-    SELECT campaign.id, campaign.resource_name, campaign.status 
-    FROM campaign 
-    WHERE campaign.name LIKE '%shop_id:{shopid}]%' 
-    AND campaign.name LIKE '%shop:{shopname}%' 
-    AND campaign.name LIKE '%label:{label}%' 
+    # Check if campaign already exists by exact name match
+    # Escape single quotes in campaign name for GAQL (replace ' with \')
+    escaped_campaign_name = campaign_name.replace("'", "\\'")
+    query = f"""
+    SELECT campaign.id, campaign.resource_name, campaign.status
+    FROM campaign
+    WHERE campaign.name = '{escaped_campaign_name}'
     """
     response = google_ads_service.search(customer_id=customer_id, query=query)
     campaign_exists_not_removed = None
@@ -190,10 +190,10 @@ def add_standard_shopping_campaign(
 
     for row in response:
         if row.campaign.status == client.enums.CampaignStatusEnum.REMOVED:
-            #print(f"Campaign '{campaign_name}' exists but is removed. Will create a new one...")
+            print(f"   Campaign '{campaign_name}' exists but is REMOVED. Will create a new one...")
             campaign_removed_found = True
         else:
-            print(f"                Campaign '{campaign_name}' already exists with ID {row.campaign.id}")
+            print(f"   ✅ Campaign '{campaign_name}' already exists (ID: {row.campaign.id}). Using existing campaign.")
             campaign_exists_not_removed = row.campaign.resource_name
             break
 
@@ -300,7 +300,7 @@ def add_standard_shopping_campaign(
     else:
         print(f"Kon label '{script_label}' niet aanmaken of ophalen.")
 
-    print(f"                Standard shopping campaign created (and labeled): {campaign_name}")
+    print(f"   ✅ Campaign created: {campaign_name}")
     return campaign_resource_name
 
 def labelCampaign(client, customer_id, campaign_name, campaign_resource_name):
@@ -369,18 +369,20 @@ def add_shopping_ad_group(client, customer_id, campaign_resource_name, ad_group_
         ad_group_name = "no_data"
 
     # Check if an ad group with this specific name exists in the campaign
+    # Escape single quotes in ad group name for GAQL (replace ' with \')
+    escaped_ad_group_name = ad_group_name.replace("'", "\\'")
     query = f"""
         SELECT ad_group.id, ad_group.resource_name, ad_group.name
         FROM ad_group
         WHERE ad_group.campaign = '{campaign_resource_name}'
-        AND ad_group.name = '{ad_group_name}'
+        AND ad_group.name = '{escaped_ad_group_name}'
         AND ad_group.status != 'REMOVED'
         LIMIT 1
     """
     response = google_ads_service.search(customer_id=customer_id, query=query)
 
     for row in response:
-        print(f"                        Ad group '{ad_group_name}' already exists (ID: {row.ad_group.id})")
+        print(f"      ✅ Ad group '{ad_group_name}' already exists (ID: {row.ad_group.id}). Using existing ad group.")
         return row.ad_group.resource_name, False
 
     # No (active) ad group exists — create one
@@ -398,11 +400,11 @@ def add_shopping_ad_group(client, customer_id, campaign_resource_name, ad_group_
             customer_id=customer_id, operations=[ad_group_operation]
         )
     except GoogleAdsException as ex:
-        print(f"                        Failed to create ad group '{ad_group_name}'. Checking again...")
+        print(f"      ⚠️  Failed to create ad group '{ad_group_name}'. Checking again...")
         return add_shopping_ad_group(client, customer_id, campaign_resource_name, ad_group_name, campaign_name)
 
     ad_group_resource_name = ad_group_response.results[0].resource_name
-    print(f"                        Ad group created with name: {ad_group_name}")
+    print(f"      ✅ Ad group created: {ad_group_name}")
     return ad_group_resource_name, True
 
 
