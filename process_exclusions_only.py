@@ -44,8 +44,8 @@ def main():
             client=client,
             workbook=workbook,
             customer_id=CUSTOMER_ID,
-            save_interval=25,      # Save every 25 campaigns (more frequent)
-            rate_limit_seconds=0.2 # 0.2s delay between campaigns (faster)
+            save_interval=25,       # Save every 25 campaigns (more frequent)
+            rate_limit_seconds=0.05 # 0.05s delay per worker (Phase 3 optimized)
         )
         print("\n✅ Exclusion sheet processing completed")
     except Exception as e:

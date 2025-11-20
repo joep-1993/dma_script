@@ -17,6 +17,8 @@ import sys
 import os
 import time
 import platform
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Dict, Any
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
@@ -35,6 +37,7 @@ try:
         create_listing_group_unit_biddable,
         add_standard_shopping_campaign,
         add_shopping_ad_group,
+        add_shopping_product_ad,
     )
 except ImportError:
     print("⚠️  Warning: Could not import helper functions from google_ads_helpers.py")
@@ -325,6 +328,76 @@ def get_ad_group_from_campaign(
         return None
 
 
+def get_campaign_and_ad_group_by_pattern(
+    client: GoogleAdsClient,
+    customer_id: str,
+    name_pattern: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve campaign AND ad group by campaign name pattern in a single query.
+    This is more efficient than making two separate API calls.
+
+    Args:
+        client: Google Ads client
+        customer_id: Customer ID
+        name_pattern: Campaign name pattern (e.g., "PLA/Electronics_A")
+
+    Returns:
+        Dict with campaign and ad_group info:
+        {
+            'campaign': {'id': ..., 'name': ..., 'resource_name': ..., 'status': ...},
+            'ad_group': {'id': ..., 'name': ..., 'resource_name': ..., 'status': ...}
+        }
+        or None if not found
+    """
+    ga_service = client.get_service("GoogleAdsService")
+
+    # Escape single quotes in name pattern for GAQL (replace ' with \')
+    escaped_name_pattern = name_pattern.replace("'", "\\'")
+
+    query = f"""
+        SELECT
+            campaign.id,
+            campaign.name,
+            campaign.resource_name,
+            campaign.status,
+            ad_group.id,
+            ad_group.name,
+            ad_group.resource_name,
+            ad_group.status
+        FROM ad_group
+        WHERE campaign.name LIKE '%{escaped_name_pattern}%'
+            AND campaign.status != 'REMOVED'
+            AND ad_group.status != 'REMOVED'
+        LIMIT 1
+    """
+
+    try:
+        response = ga_service.search(customer_id=customer_id, query=query)
+
+        for row in response:
+            return {
+                'campaign': {
+                    'id': row.campaign.id,
+                    'name': row.campaign.name,
+                    'resource_name': row.campaign.resource_name,
+                    'status': row.campaign.status.name
+                },
+                'ad_group': {
+                    'id': row.ad_group.id,
+                    'name': row.ad_group.name,
+                    'resource_name': row.ad_group.resource_name,
+                    'status': row.ad_group.status.name
+                }
+            }
+
+        return None
+
+    except GoogleAdsException as e:
+        print(f"❌ Error searching for campaign+ad group '{name_pattern}': {e}")
+        return None
+
+
 # ============================================================================
 # LISTING TREE REBUILD FUNCTIONS (Custom Label 3 Targeting)
 # ============================================================================
@@ -522,7 +595,7 @@ def rebuild_tree_with_custom_label_3_exclusion(
 
     # Step 3: Remove old tree
     safe_remove_entire_listing_tree(client, customer_id, str(ad_group_id))
-    time.sleep(0.5)
+    # No sleep needed - API operations are synchronous
 
     agc_service = client.get_service("AdGroupCriterionService")
 
@@ -704,7 +777,7 @@ def rebuild_tree_with_custom_label_3_exclusion(
         print(f"   ❌ Error rebuilding tree: {e}")
         raise  # Re-raise exception so calling code can handle it properly
 
-    time.sleep(0.5)
+    # No sleep needed - API operations are synchronous
 
     # MUTATE 2: Add shop exclusion under each CL0 subdivision (if they exist)
     ops2 = []
@@ -818,7 +891,7 @@ def build_listing_tree_for_inclusion(
 
     # Remove existing tree if any
     safe_remove_entire_listing_tree(client, customer_id, ad_group_id)
-    time.sleep(0.5)
+    # No sleep needed - API operations are synchronous
 
     agc_service = client.get_service("AdGroupCriterionService")
 
@@ -925,7 +998,7 @@ def build_listing_tree_for_inclusion(
     # Execute first mutate
     resp1 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
     maincat_subdivision_actual = resp1.results[3].resource_name  # Fourth result is maincat subdivision (0=root, 1=cl3, 2=cl3_others, 3=cl4)
-    time.sleep(0.5)
+    # No sleep needed - API operations are synchronous
 
     # MUTATE 2: Under maincat_id, add the positive custom_label_1 target
     # Note: CL1 OTHERS was already created in MUTATE 1
@@ -1171,6 +1244,18 @@ def process_inclusion_sheet(
                     )
 
                     print(f"      ✅ Listing tree created for {shop_name}")
+
+                    # Create shopping product ad in the ad group
+                    print(f"      Creating shopping product ad...")
+                    ad_resource_name = add_shopping_product_ad(
+                        client=client,
+                        customer_id=customer_id,
+                        ad_group_resource_name=ad_group_resource_name
+                    )
+
+                    if not ad_resource_name:
+                        print(f"      ⚠️  Warning: Failed to create shopping ad for {shop_name}")
+
                     shops_processed_successfully.append(shop_name)
 
                     # Small delay to avoid concurrent modification issues
@@ -1217,34 +1302,107 @@ def process_inclusion_sheet(
     print(f"{'='*70}\n")
 
 
+def _process_single_exclusion_row(
+    row_data: dict,
+    client: GoogleAdsClient,
+    customer_id: str,
+    rate_limit_seconds: float
+) -> dict:
+    """
+    Process a single exclusion row (worker function for parallel processing).
+
+    Args:
+        row_data: Dict containing row information
+        client: Google Ads client
+        customer_id: Customer ID
+        rate_limit_seconds: Rate limit delay
+
+    Returns:
+        Dict with results: {'success': bool, 'error': str or None}
+    """
+    idx = row_data['idx']
+    shop_name = row_data['shop_name']
+    cat_uitsluiten = row_data['cat_uitsluiten']
+    custom_label_1 = row_data['custom_label_1']
+
+    print(f"\n[Row {idx}] Processing exclusion for shop: {shop_name}")
+    print(f"         Category: {cat_uitsluiten}, Custom Label 1: {custom_label_1}")
+
+    # Build campaign name pattern
+    campaign_pattern = f"PLA/{cat_uitsluiten}_{custom_label_1}"
+    print(f"   Searching for campaign+ad group: {campaign_pattern}")
+
+    # Use combined lookup (saves 1 API call)
+    result = get_campaign_and_ad_group_by_pattern(client, customer_id, campaign_pattern)
+    if not result:
+        print(f"   ❌ Campaign or ad group not found")
+        return {
+            'success': False,
+            'error': f"Campaign not found: {campaign_pattern}"
+        }
+
+    campaign = result['campaign']
+    ad_group = result['ad_group']
+
+    print(f"   ✅ Found campaign: {campaign['name']} (ID: {campaign['id']})")
+    print(f"   ✅ Found ad group: {ad_group['name']} (ID: {ad_group['id']})")
+
+    # Rebuild tree with shop name exclusion
+    try:
+        rebuild_tree_with_custom_label_3_exclusion(
+            client=client,
+            customer_id=customer_id,
+            ad_group_id=ad_group['id'],
+            shop_name=shop_name,
+            default_bid_micros=DEFAULT_BID_MICROS
+        )
+        print(f"   ✅ SUCCESS - Row {idx} completed")
+
+        # Rate limiting ONLY after successful processing
+        if rate_limit_seconds > 0:
+            time.sleep(rate_limit_seconds)
+
+        return {'success': True, 'error': None}
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"   ❌ Error rebuilding tree: {error_msg}")
+        return {
+            'success': False,
+            'error': f"Error rebuilding tree: {error_msg[:500]}"
+        }
+
+
 def process_exclusion_sheet(
     client: GoogleAdsClient,
     workbook: openpyxl.Workbook,
     customer_id: str,
     save_interval: int = 50,
-    rate_limit_seconds: float = 0.5
+    rate_limit_seconds: float = 0.05
 ):
     """
-    Process the 'uitsluiten' (exclusion) sheet.
+    Process the 'uitsluiten' (exclusion) sheet with PARALLEL PROCESSING.
+
+    Uses ThreadPoolExecutor with 15 workers for ~8x speedup (Phase 3 optimized).
 
     For each row:
-    1. Retrieve campaign by pattern: PLA/*cat_uitsluiten*_*custom_label_1*
-    2. Get ad group from campaign
-    3. Rebuild tree to EXCLUDE shop name (custom label 3)
-    4. Update column F with TRUE/FALSE
+    1. Retrieve campaign AND ad group by pattern (single API call)
+    2. Rebuild tree to EXCLUDE shop name (custom label 3)
+    3. Update column F with TRUE/FALSE
 
     Args:
         client: Google Ads client
         workbook: Excel workbook
         customer_id: Customer ID
         save_interval: Save workbook every N campaigns (default: 50)
-        rate_limit_seconds: Delay between campaigns to avoid API rate limits (default: 0.5)
+        rate_limit_seconds: Delay per worker after successful processing (default: 0.05)
     """
     print(f"\n{'='*70}")
-    print(f"PROCESSING EXCLUSION SHEET: '{SHEET_EXCLUSION}'")
+    print(f"PROCESSING EXCLUSION SHEET: '{SHEET_EXCLUSION}' (PARALLEL MODE)")
     print(f"{'='*70}")
+    print(f"  Workers: 15 parallel threads (Phase 3 optimized)")
     print(f"  Save interval: Every {save_interval} campaigns")
-    print(f"  Rate limit: {rate_limit_seconds}s delay between campaigns")
+    print(f"  Rate limit: {rate_limit_seconds}s delay per worker")
     print(f"{'='*70}\n")
 
     try:
@@ -1253,109 +1411,96 @@ def process_exclusion_sheet(
         print(f"❌ Sheet '{SHEET_EXCLUSION}' not found in workbook")
         return
 
-    # Skip header row (row 1)
-    total_rows = 0
-    success_count = 0
-    processed_since_save = 0
+    # Step 1: Collect all rows to process
+    rows_to_process = []
 
     for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=False), start=2):
-        # Check if status column (F) is empty - if so, this is where we start processing
+        # Skip rows that already have a status
         status_value = row[COL_EX_STATUS].value
-
-        # Skip rows that already have a status (TRUE/FALSE)
         if status_value is not None and status_value != '':
             continue
 
-        total_rows += 1
-
-        # Extract values (using exclusion sheet column indices)
+        # Extract values
         shop_name = row[COL_EX_SHOP_NAME].value
-        _shop_id = row[COL_EX_SHOP_ID].value  # Available if needed
         cat_uitsluiten = row[COL_EX_CAT_UITSLUITEN].value
-        _diepste_cat_id = row[COL_EX_DIEPSTE_CAT_ID].value  # Available if needed
         custom_label_1 = row[COL_EX_CUSTOM_LABEL_1].value
-
-        print(f"\n[Row {idx}] Processing exclusion for shop: {shop_name}")
-        print(f"         Category: {cat_uitsluiten}, Custom Label 1: {custom_label_1}")
 
         # Validate required fields
         if not shop_name or not cat_uitsluiten or not custom_label_1:
-            print(f"   ⚠️  Missing required fields, skipping row")
             row[COL_EX_STATUS].value = False
-            # Only write to error column if it exists
             if len(row) > COL_EX_ERROR:
                 row[COL_EX_ERROR].value = "Missing required fields (shop_name/cat_uitsluiten/custom_label_1)"
             continue
 
-        # Build campaign name pattern
-        campaign_pattern = f"PLA/{cat_uitsluiten}_{custom_label_1}"
-        print(f"   Searching for campaign: {campaign_pattern}")
+        rows_to_process.append({
+            'idx': idx,
+            'row_obj': row,
+            'shop_name': shop_name,
+            'cat_uitsluiten': cat_uitsluiten,
+            'custom_label_1': custom_label_1
+        })
 
-        # Retrieve campaign
-        campaign = get_campaign_by_name_pattern(client, customer_id, campaign_pattern)
-        if not campaign:
-            print(f"   ❌ Campaign not found")
-            row[COL_EX_STATUS].value = False
-            # Only write to error column if it exists
-            if len(row) > COL_EX_ERROR:
-                row[COL_EX_ERROR].value = f"Campaign not found: {campaign_pattern}"
-            continue
+    total_rows = len(rows_to_process)
+    print(f"Found {total_rows} row(s) to process\n")
 
-        print(f"   ✅ Found campaign: {campaign['name']} (ID: {campaign['id']})")
+    if total_rows == 0:
+        print("✅ No rows to process")
+        return
 
-        # Retrieve ad group
-        ad_group = get_ad_group_from_campaign(client, customer_id, campaign['id'])
-        if not ad_group:
-            print(f"   ❌ No ad group found in campaign")
-            row[COL_EX_STATUS].value = False
-            # Only write to error column if it exists
-            if len(row) > COL_EX_ERROR:
-                row[COL_EX_ERROR].value = f"No ad group found in campaign: {campaign['name']}"
-            continue
+    # Step 2: Process rows in parallel using ThreadPoolExecutor
+    success_count = 0
+    processed_count = 0
+    lock = threading.Lock()  # Thread-safe counter and Excel writes
 
-        print(f"   ✅ Found ad group: {ad_group['name']} (ID: {ad_group['id']})")
+    def process_and_update(row_data):
+        """Wrapper that processes and updates Excel (thread-safe)"""
+        nonlocal success_count, processed_count
 
-        # Rebuild tree with shop name exclusion
-        try:
-            rebuild_tree_with_custom_label_3_exclusion(
-                client=client,
-                customer_id=customer_id,
-                ad_group_id=ad_group['id'],
-                shop_name=shop_name,
-                default_bid_micros=DEFAULT_BID_MICROS
-            )
-            row[COL_EX_STATUS].value = True
-            # Only write to error column if it exists
-            if len(row) > COL_EX_ERROR:
-                row[COL_EX_ERROR].value = ""  # Clear error message on success
-            success_count += 1
-            processed_since_save += 1
-            print(f"   ✅ SUCCESS - Row {idx} completed")
+        result = _process_single_exclusion_row(
+            row_data=row_data,
+            client=client,
+            customer_id=customer_id,
+            rate_limit_seconds=rate_limit_seconds
+        )
 
-            # Rate limiting ONLY after successful processing (moved here for optimization)
-            if rate_limit_seconds > 0:
-                time.sleep(rate_limit_seconds)
+        # Update Excel row (thread-safe)
+        with lock:
+            row_obj = row_data['row_obj']
 
-        except Exception as e:
-            error_msg = str(e)
-            print(f"   ❌ Error rebuilding tree: {error_msg}")
-            row[COL_EX_STATUS].value = False
-            # Only write to error column if it exists
-            if len(row) > COL_EX_ERROR:
-                row[COL_EX_ERROR].value = f"Error rebuilding tree: {error_msg[:500]}"  # Limit error message length
-            processed_since_save += 1
-            # NO rate limiting after errors - fail fast
+            if result['success']:
+                row_obj[COL_EX_STATUS].value = True
+                if len(row_obj) > COL_EX_ERROR:
+                    row_obj[COL_EX_ERROR].value = ""
+                success_count += 1
+            else:
+                row_obj[COL_EX_STATUS].value = False
+                if len(row_obj) > COL_EX_ERROR:
+                    row_obj[COL_EX_ERROR].value = result['error']
 
-        # Incremental save every N campaigns
-        if processed_since_save >= save_interval:
-            print(f"\n   💾 Saving progress... ({success_count}/{total_rows} successful so far)")
+            processed_count += 1
+
+            # Incremental save (thread-safe)
+            if processed_count % save_interval == 0:
+                print(f"\n   💾 Saving progress... ({success_count}/{processed_count} successful so far)")
+                try:
+                    workbook.save(EXCEL_FILE_PATH)
+                    print(f"   ✅ Progress saved successfully")
+                except Exception as save_error:
+                    print(f"   ⚠️  Error saving file: {save_error}")
+
+        return result
+
+    # Execute with ThreadPoolExecutor (15 workers - Phase 3 optimized)
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        # Submit all tasks
+        futures = [executor.submit(process_and_update, row_data) for row_data in rows_to_process]
+
+        # Wait for all to complete
+        for future in as_completed(futures):
             try:
-                workbook.save(EXCEL_FILE_PATH)
-                print(f"   ✅ Progress saved successfully")
-                processed_since_save = 0
-            except Exception as save_error:
-                print(f"   ⚠️  Error saving file: {save_error}")
-                print(f"   ⚠️  Continuing without save...")
+                future.result()  # Raise any exceptions that occurred
+            except Exception as e:
+                print(f"   ⚠️  Worker exception: {e}")
 
     # Final save
     print(f"\n   💾 Final save...")
@@ -1398,18 +1543,20 @@ def main():
     except Exception as e:
         print(f"❌ Error loading Excel file: {e}")
         sys.exit(1)
-    '''
+
     # Process inclusion sheet
     try:
         process_inclusion_sheet(client, workbook, CUSTOMER_ID)
     except Exception as e:
         print(f"❌ Error processing inclusion sheet: {e}")
+
     '''
     # Process exclusion sheet
     try:
         process_exclusion_sheet(client, workbook, CUSTOMER_ID)
     except Exception as e:
         print(f"❌ Error processing exclusion sheet: {e}")
+    '''
 
     # Save workbook with updates
     print(f"\n{'='*70}")

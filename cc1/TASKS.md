@@ -14,6 +14,16 @@ _Tasks currently being worked on (max 1-2 items)_
 ## Completed
 _Recently finished tasks_
 
+- [x] Fix and test shopping product ad creation #claude-session:2025-11-20 #priority:high
+  - Created add_shopping_product_ad() function in google_ads_helpers.py
+  - Fixed protobuf union field issue using CopyFrom on _pb objects
+  - Key fix: ad_group_ad.ad._pb.shopping_product_ad.CopyFrom(shopping_product_ad_info._pb)
+  - Function creates shopping product ads with ENABLED status
+  - Checks for existing ads before creation to prevent duplicates
+  - Integrated into process_inclusion_sheet() - ads created after listing tree
+  - Shopping ads automatically pull product data from Merchant Center feed
+  - Tested and verified working on campaign 23273663505
+  - Created 3 ads successfully across all ad groups
 - [x] Make inclusion script idempotent with existing resource checks #claude-session:2025-11-19 #priority:medium
   - Modified campaign lookup to search by exact campaign name instead of embedded metadata
   - Added check for existing campaigns before creation (reuses if found)

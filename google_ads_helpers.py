@@ -439,3 +439,67 @@ def ensure_campaign_label_exists(client, customer_id, label_name):
         return None
 
 script_label = "DMA_SCRIPT_JVS"
+
+
+def add_shopping_product_ad(client, customer_id, ad_group_resource_name):
+    """
+    Add a shopping product ad to an ad group.
+
+    Shopping product ads don't need creative assets - they automatically
+    pull product data from the Merchant Center feed.
+
+    Args:
+        client: GoogleAdsClient instance
+        customer_id: Google Ads customer ID
+        ad_group_resource_name: Resource name of the ad group
+
+    Returns:
+        str: Resource name of the created ad, or None if already exists
+    """
+    ad_group_ad_service = client.get_service("AdGroupAdService")
+    google_ads_service = client.get_service("GoogleAdsService")
+
+    # Check if ad already exists in this ad group
+    query = f"""
+        SELECT ad_group_ad.ad.id, ad_group_ad.resource_name
+        FROM ad_group_ad
+        WHERE ad_group_ad.ad_group = '{ad_group_resource_name}'
+        AND ad_group_ad.status != 'REMOVED'
+        LIMIT 1
+    """
+
+    try:
+        response = google_ads_service.search(customer_id=customer_id, query=query)
+        for row in response:
+            print(f"      ℹ️  Shopping ad already exists in ad group (ID: {row.ad_group_ad.ad.id})")
+            return row.ad_group_ad.resource_name
+    except Exception:
+        pass  # No existing ad found, proceed to create
+
+    # Create shopping product ad
+    # NOTE: For Shopping campaigns, ads are minimal - no URLs, no creative
+    ad_group_ad_operation = client.get_type("AdGroupAdOperation")
+    ad_group_ad = ad_group_ad_operation.create
+
+    # Set ad group and status
+    ad_group_ad.ad_group = ad_group_resource_name
+    ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
+
+    # For shopping product ads, we MUST explicitly set the union field
+    # The ad_data oneof field requires us to set shopping_product_ad
+    # We do this by creating an empty ShoppingProductAdInfo and assigning it
+    shopping_product_ad_info = client.get_type("ShoppingProductAdInfo")
+    # Assign the empty shopping product ad info to the ad
+    # This properly sets the oneof union field
+    ad_group_ad.ad._pb.shopping_product_ad.CopyFrom(shopping_product_ad_info._pb)
+
+    try:
+        ad_group_ad_response = ad_group_ad_service.mutate_ad_group_ads(
+            customer_id=customer_id, operations=[ad_group_ad_operation]
+        )
+        ad_resource_name = ad_group_ad_response.results[0].resource_name
+        print(f"      ✅ Shopping product ad created")
+        return ad_resource_name
+    except GoogleAdsException as ex:
+        print(f"      ⚠️  Failed to create shopping ad: {ex}")
+        return None
