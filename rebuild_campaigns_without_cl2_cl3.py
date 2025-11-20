@@ -70,7 +70,7 @@ def get_campaign_and_ad_group_by_pattern(client, customer_id, campaign_pattern):
     return None
 
 
-def rebuild_tree_with_shop_exclusions(client, customer_id, ad_group_id, diepste_cat_id, custom_label_1, shop_names, default_bid_micros=DEFAULT_BID_MICROS):
+def rebuild_tree_with_shop_exclusions_from_values(client, customer_id, ad_group_id, diepste_cat_id, custom_label_1, shop_names, default_bid_micros=DEFAULT_BID_MICROS):
     """
     Rebuild listing tree with CL0, CL1, and multiple CL3 shop exclusions.
 
@@ -327,7 +327,7 @@ def main():
             print(f"   Excluding {len(shops)} shop(s)...")
 
             # Rebuild tree with all shop exclusions
-            rebuild_tree_with_shop_exclusions(
+            rebuild_tree_with_shop_exclusions_from_values(
                 client,
                 CUSTOMER_ID,
                 result['ad_group']['id'],

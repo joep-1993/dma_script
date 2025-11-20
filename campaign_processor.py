@@ -889,16 +889,17 @@ def rebuild_tree_with_shop_exclusions(
     ag_service = client.get_service("AdGroupService")
     ag_path = ag_service.ad_group_path(customer_id, ad_group_id)
 
+    # Query ALL listing groups (subdivisions and units) to find CL0 and CL1
     query = f"""
         SELECT
+            ad_group_criterion.listing_group.type,
             ad_group_criterion.listing_group.case_value.product_custom_attribute.index,
             ad_group_criterion.listing_group.case_value.product_custom_attribute.value,
-            ad_group_criterion.cpc_bid_micros
+            ad_group_criterion.cpc_bid_micros,
+            ad_group_criterion.negative
         FROM ad_group_criterion
         WHERE ad_group_criterion.ad_group = '{ag_path}'
             AND ad_group_criterion.type = 'LISTING_GROUP'
-            AND ad_group_criterion.listing_group.type = UNIT
-            AND ad_group_criterion.negative = false
     """
 
     try:
@@ -918,13 +919,16 @@ def rebuild_tree_with_shop_exclusions(
             index = case_value.product_custom_attribute.index.name
             value = case_value.product_custom_attribute.value
 
-            if index == 'INDEX0':
+            # Get CL0 and CL1 from any node (subdivision or unit)
+            if index == 'INDEX0' and value:
                 cl0_value = value
-            elif index == 'INDEX1':
+            elif index == 'INDEX1' and value:
                 cl1_value = value
 
-            # Capture existing bid if available
-            if row.ad_group_criterion.cpc_bid_micros:
+            # Capture existing bid from positive units only
+            if (row.ad_group_criterion.listing_group.type.name == 'UNIT' and
+                not row.ad_group_criterion.negative and
+                row.ad_group_criterion.cpc_bid_micros):
                 existing_bid = row.ad_group_criterion.cpc_bid_micros
 
     if not cl0_value or not cl1_value:
