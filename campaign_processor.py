@@ -18,6 +18,7 @@ import os
 import time
 import platform
 import threading
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Dict, Any
 from google.ads.googleads.client import GoogleAdsClient
@@ -850,6 +851,226 @@ def rebuild_tree_with_custom_label_3_exclusion(
         print(f"   ✅ Tree rebuilt: EXCLUDING shop '{shop_name}', showing all others.")
 
 
+def rebuild_tree_with_shop_exclusions(
+    client: GoogleAdsClient,
+    customer_id: str,
+    ad_group_id: int,
+    shop_names: list,
+    default_bid_micros: int = DEFAULT_BID_MICROS
+):
+    """
+    Rebuild listing tree with multiple CL3 shop exclusions.
+
+    This function reads the existing tree structure (CL0, CL1), removes it,
+    and rebuilds it with multiple shop exclusions.
+
+    Tree structure:
+    ROOT (subdivision)
+    ├─ CL0 = diepste_cat_id (subdivision)
+    │  ├─ CL1 = custom_label_1 (subdivision)
+    │  │  ├─ CL3 = shop1 (unit, negative)
+    │  │  ├─ CL3 = shop2 (unit, negative)
+    │  │  ├─ CL3 = shop3 (unit, negative)
+    │  │  └─ CL3 OTHERS (unit, positive with bid)
+    │  └─ CL1 OTHERS (unit, negative)
+    └─ CL0 OTHERS (unit, negative)
+
+    Args:
+        client: Google Ads client
+        customer_id: Customer ID
+        ad_group_id: Ad group ID
+        shop_names: List of shop names to exclude (CL3 values)
+        default_bid_micros: Bid amount in micros
+    """
+    print(f"   Rebuilding tree to EXCLUDE {len(shop_names)} shop(s): {', '.join(shop_names)}")
+
+    # Step 1: Read existing tree to find CL0 and CL1 values
+    ga_service = client.get_service("GoogleAdsService")
+    ag_service = client.get_service("AdGroupService")
+    ag_path = ag_service.ad_group_path(customer_id, ad_group_id)
+
+    query = f"""
+        SELECT
+            ad_group_criterion.listing_group.case_value.product_custom_attribute.index,
+            ad_group_criterion.listing_group.case_value.product_custom_attribute.value,
+            ad_group_criterion.cpc_bid_micros
+        FROM ad_group_criterion
+        WHERE ad_group_criterion.ad_group = '{ag_path}'
+            AND ad_group_criterion.type = 'LISTING_GROUP'
+            AND ad_group_criterion.listing_group.type = UNIT
+            AND ad_group_criterion.negative = false
+    """
+
+    try:
+        results = list(ga_service.search(customer_id=customer_id, query=query))
+    except Exception as e:
+        print(f"   ❌ Error reading existing tree: {e}")
+        raise
+
+    # Extract CL0 and CL1 values from existing tree
+    cl0_value = None
+    cl1_value = None
+    existing_bid = default_bid_micros
+
+    for row in results:
+        case_value = row.ad_group_criterion.listing_group.case_value
+        if case_value.product_custom_attribute:
+            index = case_value.product_custom_attribute.index.name
+            value = case_value.product_custom_attribute.value
+
+            if index == 'INDEX0':
+                cl0_value = value
+            elif index == 'INDEX1':
+                cl1_value = value
+
+            # Capture existing bid if available
+            if row.ad_group_criterion.cpc_bid_micros:
+                existing_bid = row.ad_group_criterion.cpc_bid_micros
+
+    if not cl0_value or not cl1_value:
+        raise Exception(f"Could not find CL0 or CL1 values in existing tree (CL0={cl0_value}, CL1={cl1_value})")
+
+    print(f"   Found existing structure: CL0={cl0_value}, CL1={cl1_value}, bid={existing_bid/10000:.2f}€")
+
+    # Step 2: Remove entire tree
+    safe_remove_entire_listing_tree(client, customer_id, str(ad_group_id))
+    print(f"   Removed existing tree")
+
+    # Step 3: Rebuild tree with multiple shop exclusions
+    agc_service = client.get_service("AdGroupCriterionService")
+
+    # MUTATE 1: Create ROOT, CL0, and their OTHERS
+    ops1 = []
+
+    # ROOT
+    root_op = create_listing_group_subdivision(
+        client=client,
+        customer_id=customer_id,
+        ad_group_id=str(ad_group_id),
+        parent_ad_group_criterion_resource_name=None,
+        listing_dimension_info=None
+    )
+    root_tmp = root_op.create.resource_name
+    ops1.append(root_op)
+
+    # CL0 subdivision
+    dim_cl0 = client.get_type("ListingDimensionInfo")
+    dim_cl0.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0
+    dim_cl0.product_custom_attribute.value = str(cl0_value)
+
+    cl0_subdivision_op = create_listing_group_subdivision(
+        client=client,
+        customer_id=customer_id,
+        ad_group_id=str(ad_group_id),
+        parent_ad_group_criterion_resource_name=root_tmp,
+        listing_dimension_info=dim_cl0
+    )
+    cl0_subdivision_tmp = cl0_subdivision_op.create.resource_name
+    ops1.append(cl0_subdivision_op)
+
+    # CL0 OTHERS (negative)
+    dim_cl0_others = client.get_type("ListingDimensionInfo")
+    dim_cl0_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX0
+    ops1.append(
+        create_listing_group_unit_biddable(
+            client=client,
+            customer_id=customer_id,
+            ad_group_id=str(ad_group_id),
+            parent_ad_group_criterion_resource_name=root_tmp,
+            listing_dimension_info=dim_cl0_others,
+            targeting_negative=True,
+            cpc_bid_micros=None
+        )
+    )
+
+    try:
+        response1 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
+        cl0_actual = response1.results[1].resource_name
+    except Exception as e:
+        raise Exception(f"Error creating ROOT and CL0: {e}")
+
+    # MUTATE 2: Create CL1 subdivision and its OTHERS
+    ops2 = []
+
+    # CL1 subdivision
+    dim_cl1 = client.get_type("ListingDimensionInfo")
+    dim_cl1.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX1
+    dim_cl1.product_custom_attribute.value = str(cl1_value)
+
+    cl1_subdivision_op = create_listing_group_subdivision(
+        client=client,
+        customer_id=customer_id,
+        ad_group_id=str(ad_group_id),
+        parent_ad_group_criterion_resource_name=cl0_actual,
+        listing_dimension_info=dim_cl1
+    )
+    cl1_subdivision_tmp = cl1_subdivision_op.create.resource_name
+    ops2.append(cl1_subdivision_op)
+
+    # CL1 OTHERS (negative)
+    dim_cl1_others = client.get_type("ListingDimensionInfo")
+    dim_cl1_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX1
+    ops2.append(
+        create_listing_group_unit_biddable(
+            client=client,
+            customer_id=customer_id,
+            ad_group_id=str(ad_group_id),
+            parent_ad_group_criterion_resource_name=cl0_actual,
+            listing_dimension_info=dim_cl1_others,
+            targeting_negative=True,
+            cpc_bid_micros=None
+        )
+    )
+
+    try:
+        response2 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
+        cl1_actual = response2.results[0].resource_name
+    except Exception as e:
+        raise Exception(f"Error creating CL1: {e}")
+
+    # MUTATE 3: Create multiple CL3 shop exclusions and CL3 OTHERS
+    ops3 = []
+
+    # Add each shop as a negative CL3 unit
+    for shop_name in shop_names:
+        dim_cl3_shop = client.get_type("ListingDimensionInfo")
+        dim_cl3_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
+        dim_cl3_shop.product_custom_attribute.value = str(shop_name)
+
+        ops3.append(
+            create_listing_group_unit_biddable(
+                client=client,
+                customer_id=customer_id,
+                ad_group_id=str(ad_group_id),
+                parent_ad_group_criterion_resource_name=cl1_actual,
+                listing_dimension_info=dim_cl3_shop,
+                targeting_negative=True,  # NEGATIVE = exclude this shop
+                cpc_bid_micros=None
+            )
+        )
+
+    # CL3 OTHERS (positive with bid)
+    dim_cl3_others = client.get_type("ListingDimensionInfo")
+    dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
+    ops3.append(
+        create_listing_group_unit_biddable(
+            client=client,
+            customer_id=customer_id,
+            ad_group_id=str(ad_group_id),
+            parent_ad_group_criterion_resource_name=cl1_actual,
+            listing_dimension_info=dim_cl3_others,
+            targeting_negative=False,  # POSITIVE = target all other shops
+            cpc_bid_micros=existing_bid
+        )
+    )
+
+    try:
+        agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops3)
+        print(f"   ✅ Tree rebuilt with {len(shop_names)} shop exclusion(s)")
+    except Exception as e:
+        raise Exception(f"Error adding shop exclusions: {e}")
+
+
 def build_listing_tree_for_inclusion(
     client: GoogleAdsClient,
     customer_id: str,
@@ -1377,32 +1598,26 @@ def process_exclusion_sheet(
     client: GoogleAdsClient,
     workbook: openpyxl.Workbook,
     customer_id: str,
-    save_interval: int = 50,
-    rate_limit_seconds: float = 0.05
+    save_interval: int = 10
 ):
     """
-    Process the 'uitsluiten' (exclusion) sheet with PARALLEL PROCESSING.
+    Process the 'uitsluiten' (exclusion) sheet with GROUPED PROCESSING.
 
-    Uses ThreadPoolExecutor with 15 workers for ~8x speedup (Phase 3 optimized).
-
-    For each row:
-    1. Retrieve campaign AND ad group by pattern (single API call)
-    2. Rebuild tree to EXCLUDE shop name (custom label 3)
-    3. Update column F with TRUE/FALSE
+    Groups rows by campaign (cat_uitsluiten + custom_label_1) and collects all
+    shops to exclude for each campaign. Then rebuilds each campaign's tree once
+    with all shop exclusions.
 
     Args:
         client: Google Ads client
         workbook: Excel workbook
         customer_id: Customer ID
-        save_interval: Save workbook every N campaigns (default: 50)
-        rate_limit_seconds: Delay per worker after successful processing (default: 0.05)
+        save_interval: Save workbook every N campaign groups (default: 10)
     """
     print(f"\n{'='*70}")
-    print(f"PROCESSING EXCLUSION SHEET: '{SHEET_EXCLUSION}' (PARALLEL MODE)")
+    print(f"PROCESSING EXCLUSION SHEET: '{SHEET_EXCLUSION}' (GROUPED MODE)")
     print(f"{'='*70}")
-    print(f"  Workers: 15 parallel threads (Phase 3 optimized)")
-    print(f"  Save interval: Every {save_interval} campaigns")
-    print(f"  Rate limit: {rate_limit_seconds}s delay per worker")
+    print(f"  Strategy: Group rows by campaign, apply all shop exclusions at once")
+    print(f"  Save interval: Every {save_interval} campaign groups")
     print(f"{'='*70}\n")
 
     try:
@@ -1411,8 +1626,9 @@ def process_exclusion_sheet(
         print(f"❌ Sheet '{SHEET_EXCLUSION}' not found in workbook")
         return
 
-    # Step 1: Collect all rows to process
-    rows_to_process = []
+    # Step 1: Group rows by campaign and collect shops
+    print("Step 1: Grouping rows by campaign...")
+    campaign_groups = defaultdict(lambda: {'rows': [], 'shops': set()})
 
     for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=False), start=2):
         # Skip rows that already have a status
@@ -1429,78 +1645,101 @@ def process_exclusion_sheet(
         if not shop_name or not cat_uitsluiten or not custom_label_1:
             row[COL_EX_STATUS].value = False
             if len(row) > COL_EX_ERROR:
-                row[COL_EX_ERROR].value = "Missing required fields (shop_name/cat_uitsluiten/custom_label_1)"
+                row[COL_EX_ERROR].value = "Missing required fields"
             continue
 
-        rows_to_process.append({
+        # Group key: (cat_uitsluiten, custom_label_1)
+        group_key = (cat_uitsluiten, str(custom_label_1))
+
+        # Add row and shop to group
+        campaign_groups[group_key]['rows'].append({
             'idx': idx,
-            'row_obj': row,
-            'shop_name': shop_name,
-            'cat_uitsluiten': cat_uitsluiten,
-            'custom_label_1': custom_label_1
+            'row_obj': row
         })
+        campaign_groups[group_key]['shops'].add(str(shop_name))
 
-    total_rows = len(rows_to_process)
-    print(f"Found {total_rows} row(s) to process\n")
+    print(f"Found {len(campaign_groups)} campaign group(s) to process")
+    print(f"Total rows: {sum(len(g['rows']) for g in campaign_groups.values())}\n")
 
-    if total_rows == 0:
-        print("✅ No rows to process")
+    if len(campaign_groups) == 0:
+        print("✅ No campaign groups to process")
         return
 
-    # Step 2: Process rows in parallel using ThreadPoolExecutor
+    # Step 2: Process each campaign group
+    print("="*70)
+    print("Step 2: Processing campaign groups...")
+    print("="*70)
+
     success_count = 0
-    processed_count = 0
-    lock = threading.Lock()  # Thread-safe counter and Excel writes
+    fail_count = 0
+    groups_processed = 0
 
-    def process_and_update(row_data):
-        """Wrapper that processes and updates Excel (thread-safe)"""
-        nonlocal success_count, processed_count
+    for i, (group_key, group_data) in enumerate(campaign_groups.items(), 1):
+        cat_uitsluiten, custom_label_1 = group_key
+        rows = group_data['rows']
+        shops = sorted(group_data['shops'])
 
-        result = _process_single_exclusion_row(
-            row_data=row_data,
-            client=client,
-            customer_id=customer_id,
-            rate_limit_seconds=rate_limit_seconds
-        )
+        campaign_pattern = f"PLA/{cat_uitsluiten}_{custom_label_1}"
 
-        # Update Excel row (thread-safe)
-        with lock:
-            row_obj = row_data['row_obj']
+        print(f"\n{'─'*70}")
+        print(f"GROUP {i}/{len(campaign_groups)}: {campaign_pattern}")
+        print(f"{'─'*70}")
+        print(f"   Rows in group: {len(rows)}")
+        print(f"   Shops to exclude: {len(shops)}")
+        print(f"   Shop names: {', '.join(shops)}")
 
-            if result['success']:
-                row_obj[COL_EX_STATUS].value = True
-                if len(row_obj) > COL_EX_ERROR:
-                    row_obj[COL_EX_ERROR].value = ""
+        try:
+            # Find campaign and ad group
+            result = get_campaign_and_ad_group_by_pattern(client, customer_id, campaign_pattern)
+
+            if not result:
+                print(f"   ❌ Campaign not found")
+                # Mark all rows in group as NOT_FOUND
+                for row_info in rows:
+                    row_info['row_obj'][COL_EX_STATUS].value = False
+                    if len(row_info['row_obj']) > COL_EX_ERROR:
+                        row_info['row_obj'][COL_EX_ERROR].value = f"Campaign not found: {campaign_pattern}"
+                    fail_count += 1
+                continue
+
+            print(f"   ✅ Found: Campaign ID {result['campaign']['id']}, Ad Group ID {result['ad_group']['id']}")
+
+            # Rebuild tree with all shop exclusions
+            rebuild_tree_with_shop_exclusions(
+                client,
+                customer_id,
+                result['ad_group']['id'],
+                shops  # Pass all shops for this campaign
+            )
+
+            # Mark all rows in group as SUCCESS
+            for row_info in rows:
+                row_info['row_obj'][COL_EX_STATUS].value = True
+                if len(row_info['row_obj']) > COL_EX_ERROR:
+                    row_info['row_obj'][COL_EX_ERROR].value = ""
                 success_count += 1
-            else:
-                row_obj[COL_EX_STATUS].value = False
-                if len(row_obj) > COL_EX_ERROR:
-                    row_obj[COL_EX_ERROR].value = result['error']
 
-            processed_count += 1
+            groups_processed += 1
+            print(f"   ✅ SUCCESS - Tree rebuilt with {len(shops)} shop exclusion(s)")
 
-            # Incremental save (thread-safe)
-            if processed_count % save_interval == 0:
-                print(f"\n   💾 Saving progress... ({success_count}/{processed_count} successful so far)")
-                try:
-                    workbook.save(EXCEL_FILE_PATH)
-                    print(f"   ✅ Progress saved successfully")
-                except Exception as save_error:
-                    print(f"   ⚠️  Error saving file: {save_error}")
+        except Exception as e:
+            print(f"   ❌ ERROR: {e}")
+            # Mark all rows in group as ERROR
+            error_msg = f"ERROR: {str(e)[:100]}"
+            for row_info in rows:
+                row_info['row_obj'][COL_EX_STATUS].value = False
+                if len(row_info['row_obj']) > COL_EX_ERROR:
+                    row_info['row_obj'][COL_EX_ERROR].value = error_msg
+                fail_count += 1
 
-        return result
-
-    # Execute with ThreadPoolExecutor (15 workers - Phase 3 optimized)
-    with ThreadPoolExecutor(max_workers=15) as executor:
-        # Submit all tasks
-        futures = [executor.submit(process_and_update, row_data) for row_data in rows_to_process]
-
-        # Wait for all to complete
-        for future in as_completed(futures):
+        # Save every N groups
+        if i % save_interval == 0:
+            print(f"\n   💾 Saving progress... ({i}/{len(campaign_groups)} groups processed)")
             try:
-                future.result()  # Raise any exceptions that occurred
-            except Exception as e:
-                print(f"   ⚠️  Worker exception: {e}")
+                workbook.save(EXCEL_FILE_PATH)
+                print(f"   ✅ Progress saved successfully")
+            except Exception as save_error:
+                print(f"   ⚠️  Error saving file: {save_error}")
 
     # Final save
     print(f"\n   💾 Final save...")
@@ -1511,7 +1750,13 @@ def process_exclusion_sheet(
         print(f"   ⚠️  Error on final save: {save_error}")
 
     print(f"\n{'='*70}")
-    print(f"EXCLUSION SHEET SUMMARY: {success_count}/{total_rows} rows processed successfully")
+    print(f"EXCLUSION SHEET SUMMARY")
+    print(f"{'='*70}")
+    print(f"Total campaign groups processed: {len(campaign_groups)}")
+    print(f"✅ Groups successful: {groups_processed}")
+    print(f"❌ Groups failed: {len(campaign_groups) - groups_processed}")
+    print(f"✅ Total rows marked success: {success_count}")
+    print(f"❌ Total rows marked failed: {fail_count}")
     print(f"{'='*70}\n")
 
 
@@ -1543,20 +1788,20 @@ def main():
     except Exception as e:
         print(f"❌ Error loading Excel file: {e}")
         sys.exit(1)
-
+    '''
     # Process inclusion sheet
     try:
         process_inclusion_sheet(client, workbook, CUSTOMER_ID)
     except Exception as e:
         print(f"❌ Error processing inclusion sheet: {e}")
-
     '''
+
     # Process exclusion sheet
     try:
         process_exclusion_sheet(client, workbook, CUSTOMER_ID)
     except Exception as e:
         print(f"❌ Error processing exclusion sheet: {e}")
-    '''
+
 
     # Save workbook with updates
     print(f"\n{'='*70}")
