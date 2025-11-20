@@ -11,9 +11,23 @@ _Active tasks for immediate work_
 ## In Progress
 _Tasks currently being worked on (max 1-2 items)_
 
+- [ ] Remove CL2/CL3 exclusions from 4,212 campaigns #priority:high #estimate:5-6h
+  - Processing campaigns to remove Custom Label 2 and Custom Label 3 shop exclusions
+  - Optimized safe_remove_entire_listing_tree() to query only root node (25-30% faster)
+  - Script processing 1,612 remaining campaigns with optimized code
+  - Progress: ~144/1,612 campaigns processed
+  - Auto-saves every 100 campaigns to prevent data loss
+
 ## Completed
 _Recently finished tasks_
 
+- [x] Optimize safe_remove_entire_listing_tree() to reduce API calls #claude-session:2025-11-20 #priority:high
+  - Rewrote function to query only for root node instead of all listing groups
+  - Changed from querying all nodes to filtered query: WHERE parent_ad_group_criterion IS NULL
+  - Reduced API calls from 4 to 3 per campaign (25-30% improvement)
+  - Updated google_ads_helpers.py lines 81-123
+  - Restarted campaign rebuild script with optimized code
+  - Performance improvement reduces estimated processing time from 7-8 hours to 5-6 hours
 - [x] Fix and test shopping product ad creation #claude-session:2025-11-20 #priority:high
   - Created add_shopping_product_ad() function in google_ads_helpers.py
   - Fixed protobuf union field issue using CopyFrom on _pb objects

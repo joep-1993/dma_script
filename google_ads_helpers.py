@@ -79,26 +79,37 @@ def list_listing_groups_with_depth(client, customer_id: str, ad_group_id: str):
 
 
 def safe_remove_entire_listing_tree(client, customer_id: str, ad_group_id: str):
+    """
+    Optimized version: Query only for the root node instead of all listing groups.
+    This reduces API calls by directly finding the root without fetching the entire tree.
+    """
     agc = client.get_service("AdGroupCriterionService")
-    rows, depth = list_listing_groups_with_depth(client, customer_id, ad_group_id)
-    if not rows:
-        return
+    ga_service = client.get_service("GoogleAdsService")
+    ag_service = client.get_service("AdGroupService")
+    ag_path = ag_service.ad_group_path(customer_id, ad_group_id)
 
-    # Find the root SUBDIVISION (the one with no parent)
-    root = None
-    for r in rows:
-        if not r.ad_group_criterion.listing_group.parent_ad_group_criterion:
-            root = r
-            break
-
-    if not root:
-        return
-
-    # Remove only the root - the API will cascade-delete all children
-    op = client.get_type("AdGroupCriterionOperation")
-    op.remove = root.ad_group_criterion.resource_name
+    # Query ONLY for the root node (no parent) - much faster than querying all nodes
+    query = f"""
+        SELECT
+            ad_group_criterion.resource_name
+        FROM ad_group_criterion
+        WHERE ad_group_criterion.ad_group = '{ag_path}'
+            AND ad_group_criterion.type = 'LISTING_GROUP'
+            AND ad_group_criterion.listing_group.parent_ad_group_criterion IS NULL
+        LIMIT 1
+    """
 
     try:
+        results = list(ga_service.search(customer_id=customer_id, query=query))
+        if not results:
+            return  # No root node found, tree already empty
+
+        root_resource_name = results[0].ad_group_criterion.resource_name
+
+        # Remove only the root - the API will cascade-delete all children
+        op = client.get_type("AdGroupCriterionOperation")
+        op.remove = root_resource_name
+
         agc.mutate_ad_group_criteria(customer_id=customer_id, operations=[op])
     except GoogleAdsException as ex:
         # Ignore if the tree is already gone or resource not found

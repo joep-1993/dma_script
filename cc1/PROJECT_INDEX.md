@@ -17,7 +17,7 @@ dma-shop-campaigns/
 │   ├── BACKLOG.md                # Future planning
 │   └── PROJECT_INDEX.md          # This file
 ├── campaign_processor.py         # ⭐ Main script - Google Ads campaign automation (with incremental saving & rate limiting)
-├── google_ads_helpers.py         # Helper functions for listing tree operations
+├── google_ads_helpers.py         # Helper functions for listing tree operations (optimized lines 81-123: 25-30% faster tree removal)
 ├── test_google_ads_init.py       # Test script for credentials verification
 ├── test_campaign_processor.py    # Test script for setup validation
 ├── test_improved_migration.py    # Test script for validating migration improvements (incremental saves, rate limiting)

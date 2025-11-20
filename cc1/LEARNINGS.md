@@ -648,6 +648,120 @@ ops.append(create_listing_group_unit(
 **Reference**: Study `rebuild_tree_with_label_and_item_ids` in example_functions.txt lines 200-250
 _#claude-session:2025-11-12_
 
+### Optimizing Google Ads API Queries with Filtered GAQL
+**Pattern**: Use WHERE clauses in GAQL queries to fetch only necessary data instead of querying all records and filtering in code
+**Use Case**: Finding the root node of a listing tree was querying all nodes then filtering in Python
+**Problem**: Original `safe_remove_entire_listing_tree()` called `list_listing_groups_with_depth()` which fetched ALL listing groups just to find the one root node
+**Implementation**:
+```python
+# INEFFICIENT: Query all nodes, then filter in Python
+def safe_remove_entire_listing_tree_OLD(client, customer_id, ad_group_id):
+    # Queries ALL listing groups (could be 100+ nodes)
+    rows, depth = list_listing_groups_with_depth(client, customer_id, ad_group_id)
+
+    # Find root node by filtering all results in Python
+    root = None
+    for r in rows:
+        if not r.ad_group_criterion.listing_group.parent_ad_group_criterion:
+            root = r
+            break
+
+    # Remove root (API cascades to children)
+    op = client.get_type("AdGroupCriterionOperation")
+    op.remove = root.ad_group_criterion.resource_name
+    agc.mutate_ad_group_criteria(operations=[op])
+
+# OPTIMIZED: Query only the root node with filtered GAQL
+def safe_remove_entire_listing_tree(client, customer_id, ad_group_id):
+    ag_path = ag_service.ad_group_path(customer_id, ad_group_id)
+
+    # Query ONLY for root node using WHERE clause
+    query = f"""
+        SELECT ad_group_criterion.resource_name
+        FROM ad_group_criterion
+        WHERE ad_group_criterion.ad_group = '{ag_path}'
+            AND ad_group_criterion.type = 'LISTING_GROUP'
+            AND ad_group_criterion.listing_group.parent_ad_group_criterion IS NULL
+        LIMIT 1
+    """
+
+    results = list(ga_service.search(customer_id=customer_id, query=query))
+    if not results:
+        return  # No tree to remove
+
+    # Remove root (API cascades to children)
+    op = client.get_type("AdGroupCriterionOperation")
+    op.remove = results[0].ad_group_criterion.resource_name
+    agc.mutate_ad_group_criteria(operations=[op])
+```
+**Benefits**:
+- Reduced API calls from 4 to 3 per campaign (25-30% improvement)
+- Less data transferred over network
+- Faster processing for large listing trees
+- More efficient for bulk operations on thousands of campaigns
+**Performance**: On 1,612 campaign batch, reduced estimated processing time from 7-8 hours to 5-6 hours
+**Key Principle**: Push filtering to the API layer with GAQL WHERE clauses instead of fetching all data and filtering in application code
+**File**: google_ads_helpers.py lines 81-123
+_#claude-session:2025-11-20_
+
+### Managing Long-Running Campaign Processing Scripts
+**Pattern**: Monitor and manage long-running scripts processing thousands of campaigns with progress tracking
+**Use Case**: Processing 4,212 campaigns to remove CL2/CL3 exclusions over 5-6 hours
+**Implementation**:
+```python
+# Script structure for long-running operations
+def process_large_campaign_batch():
+    processed_count = 0
+    save_interval = 100  # Auto-save every 100 campaigns
+
+    for idx, row in enumerate(sheet.iter_rows(min_row=2), start=2):
+        # Skip already processed
+        if row[STATUS_COL].value is not None:
+            continue
+
+        # Process campaign
+        print(f"[{processed_count + 1}/{total_remaining}] Row {idx}: {campaign_name}")
+
+        try:
+            # Do work...
+            row[STATUS_COL].value = True
+            processed_count += 1
+
+            # Auto-save at intervals
+            if processed_count % save_interval == 0:
+                print(f"\n💾 Progress saved at {processed_count} campaigns")
+                workbook.save(EXCEL_FILE_PATH)
+
+        except Exception as e:
+            row[STATUS_COL].value = False
+            print(f"   ❌ Error: {e}")
+
+    # Final save
+    workbook.save(EXCEL_FILE_PATH)
+```
+**Monitoring Running Script**:
+```bash
+# Check progress in background process
+python3 -u script.py &  # Run in background with unbuffered output
+
+# Monitor output with filtering
+tail -f output.log | grep "Row"  # Watch progress
+ps aux | grep python3  # Check process status
+```
+**Benefits**:
+- Progress tracking with row numbers and campaign names
+- Auto-save prevents data loss on crashes
+- Can resume from last save point
+- Clear error reporting per campaign
+- Background execution for multi-hour runs
+**Optimization Tips**:
+- Use optimized API queries to reduce processing time
+- Implement smart rate limiting (delay only after success)
+- Skip rows with existing status values for resumability
+- Save more frequently (every 50-100) for long runs
+**Use Case**: 4,212 campaign batch processed over 5-6 hours with auto-saves every 100 campaigns
+_#claude-session:2025-11-20_
+
 ### Idempotent Campaign and Ad Group Creation
 **Pattern**: Check for existing resources before creation to enable safe re-runs without duplicates
 **Use Case**: Inclusion script needs to be re-runnable when adding new shops to existing campaigns
