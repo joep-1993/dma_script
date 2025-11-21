@@ -859,19 +859,18 @@ def rebuild_tree_with_shop_exclusions(
     default_bid_micros: int = DEFAULT_BID_MICROS
 ):
     """
-    Rebuild listing tree with multiple CL3 shop exclusions.
+    Rebuild listing tree with CL3 shop exclusions while preserving item ID exclusions.
 
-    This function reads the existing tree structure (CL0, CL1), removes it,
-    and rebuilds it with multiple shop exclusions.
-
-    Tree structure:
+    Tree structure (with item IDs):
     ROOT (subdivision)
     ├─ CL0 = diepste_cat_id (subdivision)
     │  ├─ CL1 = custom_label_1 (subdivision)
-    │  │  ├─ CL3 = shop1 (unit, negative)
-    │  │  ├─ CL3 = shop2 (unit, negative)
-    │  │  ├─ CL3 = shop3 (unit, negative)
-    │  │  └─ CL3 OTHERS (unit, positive with bid)
+    │  │  ├─ CL3 = shop1 (unit, negative) - exclude shop 1
+    │  │  ├─ CL3 = shop2 (unit, negative) - exclude shop 2
+    │  │  └─ CL3 OTHERS (subdivision) - for all other shops:
+    │  │     ├─ ITEM_ID = xxx (unit, negative) - preserved exclusions
+    │  │     ├─ ITEM_ID = yyy (unit, negative) - preserved exclusions
+    │  │     └─ ITEM_ID OTHERS (unit, positive with bid)
     │  └─ CL1 OTHERS (unit, negative)
     └─ CL0 OTHERS (unit, negative)
 
@@ -912,11 +911,11 @@ def rebuild_tree_with_shop_exclusions(
                 print(f"   📌 Ad group name ends with '{suffix}' → CL1 must be '{required_cl1}'")
                 break
 
-    # Step 2: Read existing tree to find CL0 and CL1 values
-    # Query ALL listing groups (subdivisions and units) to find CL0 and CL1
+    # Step 2: Read existing tree to find CL0, CL1, and item ID exclusions
     query = f"""
         SELECT
             ad_group_criterion.listing_group.type,
+            ad_group_criterion.listing_group.case_value.product_item_id.value,
             ad_group_criterion.listing_group.case_value.product_custom_attribute.index,
             ad_group_criterion.listing_group.case_value.product_custom_attribute.value,
             ad_group_criterion.cpc_bid_micros,
@@ -932,13 +931,22 @@ def rebuild_tree_with_shop_exclusions(
         print(f"   ❌ Error reading existing tree: {e}")
         raise
 
-    # Extract CL0 and CL1 values from existing tree
+    # Extract CL0, CL1, item IDs, and bid from existing tree
     cl0_value = None
     cl1_value = None
     existing_bid = default_bid_micros
+    item_id_exclusions = []  # List of item IDs to preserve
 
     for row in results:
         case_value = row.ad_group_criterion.listing_group.case_value
+
+        # Check for item ID
+        if case_value.product_item_id.value:
+            # Only preserve NEGATIVE item IDs (exclusions)
+            if row.ad_group_criterion.negative:
+                item_id_exclusions.append(case_value.product_item_id.value)
+
+        # Check for custom attributes (CL0-CL4)
         if case_value.product_custom_attribute:
             index = case_value.product_custom_attribute.index.name
             value = case_value.product_custom_attribute.value
@@ -967,11 +975,17 @@ def rebuild_tree_with_shop_exclusions(
     if not cl1_value:
         raise Exception(f"Could not find CL1 value in existing tree and ad group name doesn't specify one")
 
-    print(f"   Found existing structure: CL0={cl0_value}, CL1={cl1_value}, bid={existing_bid/10000:.2f}€")
+    if item_id_exclusions:
+        print(f"   Found existing structure: CL0={cl0_value}, CL1={cl1_value}, bid={existing_bid/10000:.2f}€, {len(item_id_exclusions)} item ID exclusion(s)")
+    else:
+        print(f"   Found existing structure: CL0={cl0_value}, CL1={cl1_value}, bid={existing_bid/10000:.2f}€")
 
-    # Step 2: Remove entire tree
+    # Step 3: Remove entire tree
     safe_remove_entire_listing_tree(client, customer_id, str(ad_group_id))
     print(f"   Removed existing tree")
+
+    # Step 4: Rebuild tree with shop exclusions and preserved item IDs
+    has_item_ids = len(item_id_exclusions) > 0
 
     # Step 3: Rebuild tree with multiple shop exclusions
     agc_service = client.get_service("AdGroupCriterionService")
@@ -1041,7 +1055,7 @@ def rebuild_tree_with_shop_exclusions(
     except Exception as e:
         raise Exception(f"Error creating ROOT and CL0: {e}")
 
-    # MUTATE 2: Create CL1 subdivision + CL3 OTHERS (to satisfy CL1)
+    # MUTATE 2: Create CL1 subdivision + CL3 OTHERS (subdivision if item IDs, else unit)
     ops2 = []
 
     # CL1 subdivision (specific value, e.g., "b")
@@ -1059,26 +1073,58 @@ def rebuild_tree_with_shop_exclusions(
     cl1_subdivision_tmp = cl1_subdivision_op.create.resource_name
     ops2.append(cl1_subdivision_op)
 
-    # CL3 OTHERS (positive with bid - under CL1) - This satisfies CL1 subdivision requirement
-    dim_cl3_others_temp = client.get_type("ListingDimensionInfo")
-    dim_cl3_others_temp.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
-    ops2.append(
-        create_listing_group_unit_biddable(
+    # CL3 OTHERS - subdivision if item IDs exist, else unit
+    dim_cl3_others = client.get_type("ListingDimensionInfo")
+    dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
+
+    if has_item_ids:
+        # Create as SUBDIVISION to hold item ID exclusions underneath
+        cl3_others_op = create_listing_group_subdivision(
             client=client,
             customer_id=customer_id,
             ad_group_id=str(ad_group_id),
-            parent_ad_group_criterion_resource_name=cl1_subdivision_tmp,  # Under CL1!
-            listing_dimension_info=dim_cl3_others_temp,
-            targeting_negative=False,  # Positive - will be updated in next mutate if needed
-            cpc_bid_micros=existing_bid
+            parent_ad_group_criterion_resource_name=cl1_subdivision_tmp,
+            listing_dimension_info=dim_cl3_others
         )
-    )
+        cl3_others_tmp = cl3_others_op.create.resource_name
+        ops2.append(cl3_others_op)
+
+        # Add ITEM_ID OTHERS under CL3 OTHERS to satisfy subdivision requirement
+        dim_item_others = client.get_type("ListingDimensionInfo")
+        dim_item_others.product_item_id = client.get_type("ProductItemIdInfo")
+        # Don't set value - this makes it OTHERS
+        ops2.append(
+            create_listing_group_unit_biddable(
+                client=client,
+                customer_id=customer_id,
+                ad_group_id=str(ad_group_id),
+                parent_ad_group_criterion_resource_name=cl3_others_tmp,
+                listing_dimension_info=dim_item_others,
+                targeting_negative=False,  # Positive
+                cpc_bid_micros=existing_bid
+            )
+        )
+    else:
+        # Create as UNIT with bid (no item IDs to preserve)
+        ops2.append(
+            create_listing_group_unit_biddable(
+                client=client,
+                customer_id=customer_id,
+                ad_group_id=str(ad_group_id),
+                parent_ad_group_criterion_resource_name=cl1_subdivision_tmp,
+                listing_dimension_info=dim_cl3_others,
+                targeting_negative=False,  # Positive
+                cpc_bid_micros=existing_bid
+            )
+        )
 
     try:
         response2 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
         cl1_actual = response2.results[0].resource_name
+        if has_item_ids:
+            cl3_others_actual = response2.results[1].resource_name  # Get actual CL3 OTHERS resource name
     except Exception as e:
-        raise Exception(f"Error creating CL1: {e}")
+        raise Exception(f"Error creating CL1 and CL3 OTHERS: {e}")
 
     # MUTATE 3: Add individual shop exclusions (CL3 OTHERS already exists from MUTATE 2)
     ops3 = []
@@ -1101,12 +1147,42 @@ def rebuild_tree_with_shop_exclusions(
             )
         )
 
-    # Execute shop exclusions (no CL3 OTHERS - already added in MUTATE 2)
+    # Execute shop exclusions
     try:
         agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops3)
-        print(f"   ✅ Tree rebuilt with {len(shop_names)} shop exclusion(s)")
     except Exception as e:
         raise Exception(f"Error adding shop exclusions: {e}")
+
+    # MUTATE 4: Add item ID exclusions under CL3 OTHERS (if any exist)
+    if has_item_ids:
+        ops4 = []
+
+        # Add each item ID as a negative unit under CL3 OTHERS
+        for item_id in item_id_exclusions:
+            dim_item_id = client.get_type("ListingDimensionInfo")
+            dim_item_id.product_item_id = client.get_type("ProductItemIdInfo")
+            dim_item_id.product_item_id.value = item_id
+
+            ops4.append(
+                create_listing_group_unit_biddable(
+                    client=client,
+                    customer_id=customer_id,
+                    ad_group_id=str(ad_group_id),
+                    parent_ad_group_criterion_resource_name=cl3_others_actual,
+                    listing_dimension_info=dim_item_id,
+                    targeting_negative=True,  # NEGATIVE = exclude this item ID
+                    cpc_bid_micros=None
+                )
+            )
+
+        # Execute item ID exclusions
+        try:
+            agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops4)
+            print(f"   ✅ Tree rebuilt with {len(shop_names)} shop exclusion(s) and {len(item_id_exclusions)} item ID exclusion(s) preserved")
+        except Exception as e:
+            raise Exception(f"Error adding item ID exclusions: {e}")
+    else:
+        print(f"   ✅ Tree rebuilt with {len(shop_names)} shop exclusion(s)")
 
 
 def build_listing_tree_for_inclusion(
