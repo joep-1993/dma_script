@@ -884,11 +884,35 @@ def rebuild_tree_with_shop_exclusions(
     """
     print(f"   Rebuilding tree to EXCLUDE {len(shop_names)} shop(s): {', '.join(shop_names)}")
 
-    # Step 1: Read existing tree to find CL0 and CL1 values
+    # Step 1: Get ad group name to check for CL1 suffix requirement
     ga_service = client.get_service("GoogleAdsService")
     ag_service = client.get_service("AdGroupService")
     ag_path = ag_service.ad_group_path(customer_id, ad_group_id)
 
+    # Query ad group name
+    ag_name_query = f"""
+        SELECT ad_group.name
+        FROM ad_group
+        WHERE ad_group.id = {ad_group_id}
+    """
+
+    try:
+        ag_results = list(ga_service.search(customer_id=customer_id, query=ag_name_query))
+        ad_group_name = ag_results[0].ad_group.name if ag_results else None
+    except Exception as e:
+        print(f"   ⚠️  Warning: Could not read ad group name: {e}")
+        ad_group_name = None
+
+    # Check if ad group name ends with _a, _b, or _c
+    required_cl1 = None
+    if ad_group_name:
+        for suffix in ['_a', '_b', '_c']:
+            if ad_group_name.endswith(suffix):
+                required_cl1 = suffix[1:]  # Remove underscore: "_a" → "a"
+                print(f"   📌 Ad group name ends with '{suffix}' → CL1 must be '{required_cl1}'")
+                break
+
+    # Step 2: Read existing tree to find CL0 and CL1 values
     # Query ALL listing groups (subdivisions and units) to find CL0 and CL1
     query = f"""
         SELECT
@@ -931,8 +955,17 @@ def rebuild_tree_with_shop_exclusions(
                 row.ad_group_criterion.cpc_bid_micros):
                 existing_bid = row.ad_group_criterion.cpc_bid_micros
 
-    if not cl0_value or not cl1_value:
-        raise Exception(f"Could not find CL0 or CL1 values in existing tree (CL0={cl0_value}, CL1={cl1_value})")
+    # Override CL1 if ad group name requires specific value
+    if required_cl1:
+        if cl1_value and cl1_value != required_cl1:
+            print(f"   ⚠️  Overriding existing CL1='{cl1_value}' with required CL1='{required_cl1}' (from ad group name)")
+        cl1_value = required_cl1
+
+    # Validate we have required values
+    if not cl0_value:
+        raise Exception(f"Could not find CL0 value in existing tree")
+    if not cl1_value:
+        raise Exception(f"Could not find CL1 value in existing tree and ad group name doesn't specify one")
 
     print(f"   Found existing structure: CL0={cl0_value}, CL1={cl1_value}, bid={existing_bid/10000:.2f}€")
 
