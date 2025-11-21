@@ -858,15 +858,17 @@ def rebuild_tree_with_shop_exclusions(
     customer_id: str,
     ad_group_id: int,
     shop_names: list,
+    required_cl0_value: str = None,
     default_bid_micros: int = DEFAULT_BID_MICROS
 ):
     """
     Rebuild listing tree with CL3 shop exclusions while preserving item ID exclusions.
+    Validates and enforces CL0 and CL1 targeting based on Excel data and ad group name.
 
     Tree structure (with item IDs):
     ROOT (subdivision)
-    ├─ CL0 = diepste_cat_id (subdivision)
-    │  ├─ CL1 = custom_label_1 (subdivision)
+    ├─ CL0 = diepste_cat_id (subdivision) - from Excel column D
+    │  ├─ CL1 = custom_label_1 (subdivision) - from ad group name suffix
     │  │  ├─ CL3 = shop1 (unit, negative) - exclude shop 1
     │  │  ├─ CL3 = shop2 (unit, negative) - exclude shop 2
     │  │  └─ CL3 OTHERS (subdivision) - for all other shops:
@@ -881,6 +883,7 @@ def rebuild_tree_with_shop_exclusions(
         customer_id: Customer ID
         ad_group_id: Ad group ID
         shop_names: List of shop names to exclude (CL3 values)
+        required_cl0_value: Required CL0 value from Excel (diepste_cat_id)
         default_bid_micros: Bid amount in micros
     """
     print(f"   Rebuilding tree to EXCLUDE {len(shop_names)} shop(s): {', '.join(shop_names)}")
@@ -965,6 +968,12 @@ def rebuild_tree_with_shop_exclusions(
                 row.ad_group_criterion.cpc_bid_micros):
                 existing_bid = row.ad_group_criterion.cpc_bid_micros
 
+    # Override CL0 if required value is specified from Excel
+    if required_cl0_value:
+        if cl0_value and cl0_value != required_cl0_value:
+            print(f"   ⚠️  Overriding existing CL0='{cl0_value}' with required CL0='{required_cl0_value}' (from Excel diepste_cat_id)")
+        cl0_value = required_cl0_value
+
     # Override CL1 if ad group name requires specific value
     if required_cl1:
         if cl1_value and cl1_value != required_cl1:
@@ -973,7 +982,10 @@ def rebuild_tree_with_shop_exclusions(
 
     # Validate we have required values
     if not cl0_value:
-        raise Exception(f"Could not find CL0 value in existing tree")
+        if required_cl0_value:
+            cl0_value = required_cl0_value
+        else:
+            raise Exception(f"Could not find CL0 value in existing tree and Excel doesn't specify one")
     if not cl1_value:
         raise Exception(f"Could not find CL1 value in existing tree and ad group name doesn't specify one")
 
@@ -1757,10 +1769,11 @@ def process_exclusion_sheet(
         # Extract values
         shop_name = row[COL_EX_SHOP_NAME].value
         cat_uitsluiten = row[COL_EX_CAT_UITSLUITEN].value
+        diepste_cat_id = row[COL_EX_DIEPSTE_CAT_ID].value
         custom_label_1 = row[COL_EX_CUSTOM_LABEL_1].value
 
         # Validate required fields
-        if not shop_name or not cat_uitsluiten or not custom_label_1:
+        if not shop_name or not cat_uitsluiten or not custom_label_1 or not diepste_cat_id:
             row[COL_EX_STATUS].value = False
             if len(row) > COL_EX_ERROR:
                 row[COL_EX_ERROR].value = "Missing required fields"
@@ -1775,6 +1788,8 @@ def process_exclusion_sheet(
             'row_obj': row
         })
         campaign_groups[group_key]['shops'].add(str(shop_name))
+        # Store diepste_cat_id (should be same for all rows in group)
+        campaign_groups[group_key]['diepste_cat_id'] = str(diepste_cat_id)
 
     print(f"Found {len(campaign_groups)} campaign group(s) to process")
     print(f"Total rows: {sum(len(g['rows']) for g in campaign_groups.values())}\n")
@@ -1796,6 +1811,7 @@ def process_exclusion_sheet(
         cat_uitsluiten, custom_label_1 = group_key
         rows = group_data['rows']
         shops = sorted(group_data['shops'])
+        diepste_cat_id = group_data.get('diepste_cat_id')
 
         campaign_pattern = f"PLA/{cat_uitsluiten}_{custom_label_1}"
 
@@ -1803,6 +1819,7 @@ def process_exclusion_sheet(
         print(f"GROUP {i}/{len(campaign_groups)}: {campaign_pattern}")
         print(f"{'─'*70}")
         print(f"   Rows in group: {len(rows)}")
+        print(f"   Diepste cat ID (CL0): {diepste_cat_id}")
         print(f"   Shops to exclude: {len(shops)}")
         print(f"   Shop names: {', '.join(shops)}")
 
@@ -1822,12 +1839,13 @@ def process_exclusion_sheet(
 
             print(f"   ✅ Found: Campaign ID {result['campaign']['id']}, Ad Group ID {result['ad_group']['id']}")
 
-            # Rebuild tree with all shop exclusions
+            # Rebuild tree with all shop exclusions and required CL0 targeting
             rebuild_tree_with_shop_exclusions(
                 client,
                 customer_id,
                 result['ad_group']['id'],
-                shops  # Pass all shops for this campaign
+                shop_names=shops,  # Pass all shops for this campaign
+                required_cl0_value=diepste_cat_id  # Required CL0 from Excel
             )
 
             # Mark all rows in group as SUCCESS
