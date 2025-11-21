@@ -1775,8 +1775,7 @@ def process_exclusion_sheet(
         # Validate required fields
         if not shop_name or not cat_uitsluiten or not custom_label_1 or not diepste_cat_id:
             row[COL_EX_STATUS].value = False
-            if len(row) > COL_EX_ERROR:
-                row[COL_EX_ERROR].value = "Missing required fields"
+            row[COL_EX_ERROR].value = "Missing required fields"
             continue
 
         # Group key: (cat_uitsluiten, custom_label_1)
@@ -1832,9 +1831,8 @@ def process_exclusion_sheet(
                 # Mark all rows in group as NOT_FOUND
                 for row_info in rows:
                     row_info['row_obj'][COL_EX_STATUS].value = False
-                    if len(row_info['row_obj']) > COL_EX_ERROR:
-                        # Brief message - campaign name is already visible in other columns
-                        row_info['row_obj'][COL_EX_ERROR].value = "Campaign not found"
+                    # Brief message - campaign name is already visible in other columns
+                    row_info['row_obj'][COL_EX_ERROR].value = "Campaign not found"
                     fail_count += 1
                 continue
 
@@ -1852,8 +1850,7 @@ def process_exclusion_sheet(
             # Mark all rows in group as SUCCESS
             for row_info in rows:
                 row_info['row_obj'][COL_EX_STATUS].value = True
-                if len(row_info['row_obj']) > COL_EX_ERROR:
-                    row_info['row_obj'][COL_EX_ERROR].value = ""
+                row_info['row_obj'][COL_EX_ERROR].value = ""  # Clear error message
                 success_count += 1
 
             groups_processed += 1
@@ -1886,8 +1883,7 @@ def process_exclusion_sheet(
 
             for row_info in rows:
                 row_info['row_obj'][COL_EX_STATUS].value = False
-                if len(row_info['row_obj']) > COL_EX_ERROR:
-                    row_info['row_obj'][COL_EX_ERROR].value = error_msg
+                row_info['row_obj'][COL_EX_ERROR].value = error_msg
                 fail_count += 1
 
         # Save every N groups
