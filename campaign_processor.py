@@ -1833,7 +1833,8 @@ def process_exclusion_sheet(
                 for row_info in rows:
                     row_info['row_obj'][COL_EX_STATUS].value = False
                     if len(row_info['row_obj']) > COL_EX_ERROR:
-                        row_info['row_obj'][COL_EX_ERROR].value = f"Campaign not found: {campaign_pattern}"
+                        # Brief message - campaign name is already visible in other columns
+                        row_info['row_obj'][COL_EX_ERROR].value = "Campaign not found"
                     fail_count += 1
                 continue
 
@@ -1861,7 +1862,28 @@ def process_exclusion_sheet(
         except Exception as e:
             print(f"   ❌ ERROR: {e}")
             # Mark all rows in group as ERROR
-            error_msg = f"ERROR: {str(e)[:100]}"
+            # Create brief, user-friendly error message
+            error_str = str(e)
+
+            # Shorten common error types
+            if "SUBDIVISION_REQUIRES_OTHERS_CASE" in error_str:
+                error_msg = "Tree structure error: missing OTHERS case"
+            elif "LISTING_GROUP_SUBDIVISION_REQUIRES_OTHERS_CASE" in error_str:
+                error_msg = "Tree structure error: missing OTHERS case"
+            elif "CONCURRENT_MODIFICATION" in error_str:
+                error_msg = "Concurrent modification (retry needed)"
+            elif "NOT_FOUND" in error_str or "not found" in error_str.lower():
+                error_msg = "Resource not found"
+            elif "INVALID_ARGUMENT" in error_str:
+                error_msg = "Invalid argument in API call"
+            elif "PERMISSION_DENIED" in error_str:
+                error_msg = "Permission denied"
+            elif "Could not find CL0" in error_str or "Could not find CL1" in error_str:
+                error_msg = error_str[:80]  # Keep this one as-is, it's informative
+            else:
+                # Generic error - truncate but keep key info
+                error_msg = error_str[:80] if len(error_str) > 80 else error_str
+
             for row_info in rows:
                 row_info['row_obj'][COL_EX_STATUS].value = False
                 if len(row_info['row_obj']) > COL_EX_ERROR:
