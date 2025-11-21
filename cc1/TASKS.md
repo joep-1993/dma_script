@@ -14,6 +14,29 @@ _Tasks currently being worked on (max 1-2 items)_
 ## Completed
 _Recently finished tasks_
 
+- [x] Fix tuple index out of range error when writing to column G #claude-session:2025-11-21 #priority:critical
+  - Changed from row tuple indexing to sheet.cell() method for writing status/errors
+  - Root cause: iter_rows() returns tuples of existing cells only, accessing non-existent columns failed
+  - Solution: sheet.cell(row=row_num, column=col_num) creates cell if it doesn't exist
+  - Applied to all status and error message writes
+  - Error messages now always appear in column G regardless of existing columns
+- [x] Improve error messages in column G with brief, user-friendly text #claude-session:2025-11-21 #priority:medium
+  - Shortened "Campaign not found" message (campaign name visible in other columns)
+  - Categorized API errors: "Tree structure error", "Concurrent modification", "Resource not found", etc.
+  - Truncated generic errors to 80 chars max (was 100)
+  - All error messages now brief and easy to understand at a glance in Excel
+- [x] Add CL0 targeting validation from Excel diepste_cat_id column #claude-session:2025-11-21 #priority:high
+  - Extract diepste_cat_id (column D) from exclusion sheet
+  - Pass required_cl0_value to rebuild_tree_with_shop_exclusions
+  - Override existing CL0 if it doesn't match Excel value
+  - Validation order: CL0 (Excel) → CL1 (ad group name) → CL3 (shops) → Item IDs
+  - Ensures correct category targeting before adding shop exclusions
+- [x] Implement working copy feature to protect original Excel file #claude-session:2025-11-21 #priority:high
+  - Create timestamped working copy before processing (format: *_working_copy_YYYYMMDD_HHMMSS.xlsx)
+  - All processing happens on copy, not original file
+  - Original file never modified or opened for writing
+  - Safe from corruption if script crashes
+  - Multiple runs create separate timestamped copies for debugging
 - [x] Add item ID exclusion preservation to shop exclusion logic #claude-session:2025-11-21 #priority:high
   - Modified rebuild_tree_with_shop_exclusions() to read and preserve existing item ID exclusions
   - Creates CL3 OTHERS as subdivision (if item IDs exist) to hold item IDs underneath

@@ -945,6 +945,127 @@ for shop_name in shop_names:
 **File**: campaign_processor.py lines 946-1154 (rebuild_tree_with_shop_exclusions function)
 _#claude-session:2025-11-21_
 
+### Working Copy Pattern for Excel File Safety
+**Pattern**: Create timestamped working copy before processing to protect original file from corruption
+**Use Case**: Long-running scripts that modify Excel files and may crash mid-execution
+**Problem**: Script crashes can corrupt Excel files, losing all original data and progress
+**Solution**:
+```python
+from datetime import datetime
+import shutil
+
+# Create timestamped working copy
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+working_copy_path = original_path.replace(".xlsx", f"_working_copy_{timestamp}.xlsx")
+
+# Copy original to working copy
+shutil.copy2(original_path, working_copy_path)
+
+# Load and process working copy
+workbook = load_workbook(working_copy_path)
+# ... process workbook ...
+workbook.save(working_copy_path)  # Save to copy, not original
+
+# Original file remains untouched
+```
+**Benefits**:
+- Original file never modified or opened for writing
+- Safe from corruption if script crashes or API errors occur
+- Multiple runs create separate timestamped copies for debugging
+- Can compare working copies to understand what changed
+- Easy rollback: just delete working copy and run again
+**File Naming**: `dma_script_ivor_working_copy_20251121_174649.xlsx`
+_#claude-session:2025-11-21_
+
+### Openpyxl: Writing to Non-Existent Columns
+**Problem**: Using `row[column_index]` fails with "tuple index out of range" when column doesn't exist
+**Root Cause**: `sheet.iter_rows()` returns tuples of cells that already exist. If row has columns A-F, tuple has 6 cells (indices 0-5). Accessing index 6 (column G) fails.
+**Broken Code**:
+```python
+for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=False), start=2):
+    # row is tuple of existing cells only
+    if len(row) == 6:  # Only has columns A-F
+        row[6].value = "error"  # FAILS: tuple index out of range
+```
+**Fixed Code**:
+```python
+for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=False), start=2):
+    # Use sheet.cell() to write to any column (creates if doesn't exist)
+    sheet.cell(row=idx, column=7).value = "error"  # Works! (column G)
+```
+**Key Insight**: `sheet.cell(row=row_num, column=col_num)` creates cell if it doesn't exist, while `row[index]` only accesses existing cells in the tuple.
+**Application**: When writing status/error messages, always use `sheet.cell()` method instead of row tuple indexing.
+_#claude-session:2025-11-21_
+
+### CL0 Validation from Excel Data
+**Pattern**: Enforce Custom Label 0 targeting based on Excel data column before applying other modifications
+**Use Case**: Exclusion sheet has "diepste_cat_id" column that must match CL0 in listing tree
+**Problem**: Tree might have wrong CL0 value from previous operations or manual changes
+**Solution**:
+```python
+def rebuild_tree_with_shop_exclusions(
+    client, customer_id, ad_group_id,
+    shop_names,
+    required_cl0_value: str = None  # From Excel
+):
+    # Step 1: Read existing tree
+    # ... extract cl0_value from tree ...
+
+    # Step 2: Override CL0 if Excel specifies different value
+    if required_cl0_value:
+        if cl0_value and cl0_value != required_cl0_value:
+            print(f"Overriding CL0='{cl0_value}' with required '{required_cl0_value}'")
+        cl0_value = required_cl0_value
+
+    # Step 3: Rebuild tree with validated CL0
+    # ... build tree with cl0_value ...
+```
+**Validation Order**:
+1. CL0 = diepste_cat_id (from Excel column D) - category targeting
+2. CL1 = a/b/c (from ad group name suffix) - variant targeting
+3. CL3 = shop exclusions (from Excel) - shop filtering
+4. Item IDs = preserved from existing tree - product exclusions
+**Benefits**: Self-correcting tree structure ensures targeting matches Excel data source
+_#claude-session:2025-11-21_
+
+### User-Friendly Error Messages in Excel
+**Pattern**: Categorize and shorten error messages for better readability in Excel cells
+**Use Case**: Writing error messages to Excel column that users will read and act on
+**Implementation**:
+```python
+error_str = str(e)
+
+# Categorize common errors with brief messages
+if "SUBDIVISION_REQUIRES_OTHERS_CASE" in error_str:
+    error_msg = "Tree structure error: missing OTHERS case"
+elif "CONCURRENT_MODIFICATION" in error_str:
+    error_msg = "Concurrent modification (retry needed)"
+elif "NOT_FOUND" in error_str or "not found" in error_str.lower():
+    error_msg = "Resource not found"
+elif "INVALID_ARGUMENT" in error_str:
+    error_msg = "Invalid argument in API call"
+elif "PERMISSION_DENIED" in error_str:
+    error_msg = "Permission denied"
+elif "Could not find CL0" in error_str or "Could not find CL1" in error_str:
+    error_msg = error_str[:80]  # Keep informative validation errors
+else:
+    # Generic error - truncate but keep key info
+    error_msg = error_str[:80] if len(error_str) > 80 else error_str
+
+# Write to Excel column
+sheet.cell(row=row_num, column=ERROR_COLUMN).value = error_msg
+```
+**Benefits**:
+- Users understand errors at a glance without reading full API traces
+- Consistent error categories help identify patterns
+- Shortened messages fit well in Excel cells
+- Actionable messages (e.g., "retry needed") guide next steps
+**Example Messages**:
+- "Campaign not found" (not "Campaign not found: PLA/Category_a")
+- "Tree structure error: missing OTHERS case" (not full API error text)
+- "Concurrent modification (retry needed)" (with action hint)
+_#claude-session:2025-11-21_
+
 ### Idempotent Campaign and Ad Group Creation
 **Pattern**: Check for existing resources before creation to enable safe re-runs without duplicates
 **Use Case**: Inclusion script needs to be re-runnable when adding new shops to existing campaigns
