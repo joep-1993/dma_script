@@ -1761,16 +1761,25 @@ def process_exclusion_sheet(
     campaign_groups = defaultdict(lambda: {'rows': [], 'shops': set()})
 
     for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=False), start=2):
+        # Check if row has enough columns
+        if len(row) <= COL_EX_CUSTOM_LABEL_1:
+            print(f"⚠️  Row {idx}: Not enough columns (has {len(row)}, needs at least {COL_EX_CUSTOM_LABEL_1 + 1}). Skipping.")
+            continue
+
         # Skip rows that already have a status
         status_value = row[COL_EX_STATUS].value
         if status_value is not None and status_value != '':
             continue
 
-        # Extract values
-        shop_name = row[COL_EX_SHOP_NAME].value
-        cat_uitsluiten = row[COL_EX_CAT_UITSLUITEN].value
-        diepste_cat_id = row[COL_EX_DIEPSTE_CAT_ID].value
-        custom_label_1 = row[COL_EX_CUSTOM_LABEL_1].value
+        # Extract values safely
+        try:
+            shop_name = row[COL_EX_SHOP_NAME].value
+            cat_uitsluiten = row[COL_EX_CAT_UITSLUITEN].value
+            diepste_cat_id = row[COL_EX_DIEPSTE_CAT_ID].value
+            custom_label_1 = row[COL_EX_CUSTOM_LABEL_1].value
+        except IndexError as e:
+            print(f"⚠️  Row {idx}: Column access error: {e}. Skipping.")
+            continue
 
         # Validate required fields
         if not shop_name or not cat_uitsluiten or not custom_label_1 or not diepste_cat_id:
@@ -1807,7 +1816,14 @@ def process_exclusion_sheet(
     groups_processed = 0
 
     for i, (group_key, group_data) in enumerate(campaign_groups.items(), 1):
-        cat_uitsluiten, custom_label_1 = group_key
+        try:
+            cat_uitsluiten, custom_label_1 = group_key
+        except (ValueError, TypeError) as e:
+            print(f"\n❌ ERROR unpacking group_key: {group_key}")
+            print(f"   Error: {e}")
+            print(f"   Skipping this group...")
+            continue
+
         rows = group_data['rows']
         shops = sorted(group_data['shops'])
         diepste_cat_id = group_data.get('diepste_cat_id')
