@@ -11,15 +11,29 @@ _Active tasks for immediate work_
 ## In Progress
 _Tasks currently being worked on (max 1-2 items)_
 
-- [ ] Remove CL2/CL3 exclusions from 4,212 campaigns #priority:high #estimate:5-6h
-  - Processing campaigns to remove Custom Label 2 and Custom Label 3 shop exclusions
-  - Optimized safe_remove_entire_listing_tree() to query only root node (25-30% faster)
-  - Script processing 1,612 remaining campaigns with optimized code
-  - Progress: ~144/1,612 campaigns processed
-  - Auto-saves every 100 campaigns to prevent data loss
-
 ## Completed
 _Recently finished tasks_
+
+- [x] Add item ID exclusion preservation to shop exclusion logic #claude-session:2025-11-21 #priority:high
+  - Modified rebuild_tree_with_shop_exclusions() to read and preserve existing item ID exclusions
+  - Creates CL3 OTHERS as subdivision (if item IDs exist) to hold item IDs underneath
+  - Tree structure: ROOT → CL0 → CL1 → CL3 shops + CL3 OTHERS (subdivision) → Item IDs
+  - Tested on ad group 189081353036 with 2 item ID exclusions - both preserved successfully
+  - Script now preserves ALL existing targeting dimensions (CL0, item IDs, etc.) when adding shop exclusions
+  - Maintains backward compatibility: CL3 OTHERS remains a unit if no item IDs present
+- [x] Add CL1 targeting validation based on ad group name suffix #claude-session:2025-11-21 #priority:medium
+  - Script detects if ad group name ends with _a, _b, or _c
+  - Extracts letter without underscore as required CL1 value (e.g., "_b" → "b")
+  - Overrides existing CL1 value with required value to ensure correct targeting
+  - Prevents cross-contamination between a/b/c variants
+  - Example: Ad group "PLA/Zwemvesten_b" will always have CL1="b" targeting
+- [x] Fix LISTING_GROUP_SUBDIVISION_REQUIRES_OTHERS_CASE error in shop exclusions #claude-session:2025-11-21 #priority:critical
+  - Restructured mutate operations to provide OTHERS cases with subdivisions in same operation
+  - MUTATE 1: ROOT + CL0 subdivision + CL1 OTHERS (under CL0) + CL0 OTHERS (under ROOT)
+  - MUTATE 2: CL1 subdivision + CL3 OTHERS (under CL1)
+  - MUTATE 3: Individual shop exclusions only (no duplicate CL3 OTHERS)
+  - Tested on ad group 161157611033 - verified correct hierarchical tree structure
+  - Key fix: Each subdivision must have its OTHERS case in the SAME mutate operation
 
 - [x] Optimize safe_remove_entire_listing_tree() to reduce API calls #claude-session:2025-11-20 #priority:high
   - Rewrote function to query only for root node instead of all listing groups

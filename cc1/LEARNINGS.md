@@ -762,6 +762,189 @@ ps aux | grep python3  # Check process status
 **Use Case**: 4,212 campaign batch processed over 5-6 hours with auto-saves every 100 campaigns
 _#claude-session:2025-11-20_
 
+### Preserving Item ID Exclusions in Listing Tree Modifications
+**Pattern**: Read existing tree structure, extract item ID exclusions, and rebuild tree with preserved exclusions
+**Use Case**: Adding shop exclusions (CL3) to campaigns that already have item ID exclusions
+**Problem**: Simply rebuilding the tree with shop exclusions would destroy existing item ID targeting
+**Solution**:
+```python
+def rebuild_tree_with_shop_exclusions(client, customer_id, ad_group_id, shop_names):
+    # Step 1: Read existing tree including item IDs
+    query = f"""
+        SELECT
+            ad_group_criterion.listing_group.case_value.product_item_id.value,
+            ad_group_criterion.listing_group.case_value.product_custom_attribute.index,
+            ad_group_criterion.listing_group.case_value.product_custom_attribute.value,
+            ad_group_criterion.negative
+        FROM ad_group_criterion
+        WHERE ad_group_criterion.ad_group = '{ag_path}'
+            AND ad_group_criterion.type = 'LISTING_GROUP'
+    """
+
+    # Extract item ID exclusions
+    item_id_exclusions = []
+    for row in results:
+        if row.listing_group.case_value.product_item_id.value:
+            if row.negative:  # Only preserve negative (exclusions)
+                item_id_exclusions.append(row.listing_group.case_value.product_item_id.value)
+
+    # Step 2: Remove old tree
+    safe_remove_entire_listing_tree(client, customer_id, ad_group_id)
+
+    # Step 3: Rebuild with conditional structure
+    has_item_ids = len(item_id_exclusions) > 0
+
+    # MUTATE 2: Create CL3 OTHERS as subdivision if item IDs exist
+    if has_item_ids:
+        # CL3 OTHERS as SUBDIVISION to hold item IDs
+        cl3_others_op = create_listing_group_subdivision(
+            parent=cl1_subdivision_tmp,
+            dimension=dim_cl3_others
+        )
+        ops2.append(cl3_others_op)
+
+        # ITEM_ID OTHERS under CL3 OTHERS (satisfies subdivision requirement)
+        dim_item_others = client.get_type("ListingDimensionInfo")
+        dim_item_others.product_item_id = client.get_type("ProductItemIdInfo")
+        ops2.append(create_listing_group_unit_biddable(
+            parent=cl3_others_tmp,
+            dimension=dim_item_others,
+            negative=False,
+            bid=existing_bid
+        ))
+    else:
+        # CL3 OTHERS as UNIT (simpler structure, no item IDs)
+        ops2.append(create_listing_group_unit_biddable(
+            parent=cl1_subdivision_tmp,
+            dimension=dim_cl3_others,
+            negative=False,
+            bid=existing_bid
+        ))
+
+    # MUTATE 3: Add shop exclusions
+    for shop_name in shop_names:
+        ops3.append(create_listing_group_unit_biddable(
+            parent=cl1_actual,
+            dimension=dim_cl3_shop,
+            negative=True
+        ))
+
+    # MUTATE 4: Add item ID exclusions (if any)
+    if has_item_ids:
+        for item_id in item_id_exclusions:
+            dim_item_id = client.get_type("ListingDimensionInfo")
+            dim_item_id.product_item_id.value = item_id
+            ops4.append(create_listing_group_unit_biddable(
+                parent=cl3_others_actual,
+                dimension=dim_item_id,
+                negative=True
+            ))
+```
+**Tree Structure**:
+```
+ROOT → CL0 → CL1 →
+  ├─ CL3=shop1 (unit, negative) - exclude shop 1
+  ├─ CL3=shop2 (unit, negative) - exclude shop 2
+  └─ CL3 OTHERS (subdivision) - for all other shops:
+     ├─ ITEM_ID=xxx (unit, negative) - preserved exclusion
+     ├─ ITEM_ID=yyy (unit, negative) - preserved exclusion
+     └─ ITEM_ID OTHERS (unit, positive with bid)
+```
+**Benefits**:
+- Preserves existing item ID exclusions when adding shop targeting
+- Maintains backward compatibility (simpler structure when no item IDs)
+- Allows combining multiple targeting dimensions without conflicts
+**Tested**: Ad group 189081353036 with 2 item ID exclusions - both preserved successfully
+_#claude-session:2025-11-21_
+
+### CL1 Targeting Validation from Ad Group Name Suffix
+**Pattern**: Enforce CL1 (Custom Label 1) targeting based on ad group name suffix to prevent targeting errors
+**Use Case**: Ad groups ending with _a, _b, or _c must target the corresponding custom_label_1 value
+**Problem**: Manual Excel entry could result in ad group name "campaign_b" but CL1="a" in tree, causing wrong products to be targeted
+**Solution**:
+```python
+def rebuild_tree_with_shop_exclusions(client, customer_id, ad_group_id, shop_names):
+    # Step 1: Get ad group name
+    ag_name_query = f"""
+        SELECT ad_group.name
+        FROM ad_group
+        WHERE ad_group.id = {ad_group_id}
+    """
+    ad_group_name = list(ga_service.search(query=ag_name_query))[0].ad_group.name
+
+    # Step 2: Check for suffix requirement
+    required_cl1 = None
+    for suffix in ['_a', '_b', '_c']:
+        if ad_group_name.endswith(suffix):
+            required_cl1 = suffix[1:]  # "_b" → "b"
+            print(f"Ad group name ends with '{suffix}' → CL1 must be '{required_cl1}'")
+            break
+
+    # Step 3: Read existing tree
+    # ... extract cl1_value from existing tree ...
+
+    # Step 4: Override CL1 if required
+    if required_cl1:
+        if cl1_value and cl1_value != required_cl1:
+            print(f"Overriding existing CL1='{cl1_value}' with required CL1='{required_cl1}'")
+        cl1_value = required_cl1
+
+    # Step 5: Rebuild tree with validated CL1
+    # ... use cl1_value in tree building ...
+```
+**Benefits**:
+- Enforces naming convention automatically
+- Prevents targeting wrong custom_label_1 segments
+- Self-corrects manual errors in tree structure
+- Ensures ad group suffix matches product targeting
+**Example**: Ad group "PLA/Zwemvesten_b" will always have CL1="b" targeting, regardless of what was in the existing tree
+_#claude-session:2025-11-21_
+
+### Fixing SUBDIVISION_REQUIRES_OTHERS_CASE with Correct Mutate Grouping
+**Pattern**: When creating listing tree subdivisions, provide each subdivision's OTHERS case in the SAME mutate operation
+**Problem**: Creating CL0 as subdivision in MUTATE 1, then adding CL1 OTHERS under it in MUTATE 2 causes `LISTING_GROUP_SUBDIVISION_REQUIRES_OTHERS_CASE` error
+**Root Cause**: Google Ads API validates subdivisions immediately and requires OTHERS case to exist in same operation
+**Broken Code**:
+```python
+# MUTATE 1: ROOT + CL0 subdivision + CL0 OTHERS
+ops1 = []
+ops1.append(root_op)  # ROOT
+ops1.append(cl0_subdivision_op)  # CL0 subdivision
+ops1.append(create_unit(parent=root_tmp, dim=cl0_others))  # CL0 OTHERS under ROOT
+# ERROR: CL0 subdivision has no OTHERS case!
+
+# MUTATE 2: CL1 subdivision + CL1 OTHERS
+ops2 = []
+ops2.append(cl1_subdivision_op)  # CL1 subdivision under CL0
+ops2.append(create_unit(parent=cl0_actual, dim=cl1_others))  # Too late!
+```
+**Fixed Code**:
+```python
+# MUTATE 1: ROOT + CL0 subdivision + BOTH required OTHERS cases
+ops1 = []
+ops1.append(root_op)  # ROOT subdivision
+ops1.append(cl0_subdivision_op)  # CL0 subdivision under ROOT
+# Add CL1 OTHERS under CL0 - satisfies CL0 subdivision requirement!
+ops1.append(create_unit(parent=cl0_subdivision_tmp, dim=cl1_others, negative=True))
+# Add CL0 OTHERS under ROOT - satisfies ROOT subdivision requirement!
+ops1.append(create_unit(parent=root_tmp, dim=cl0_others, negative=True))
+
+# MUTATE 2: CL1 subdivision + its OTHERS case
+ops2 = []
+ops2.append(cl1_subdivision_op)  # CL1 subdivision under CL0
+# Add CL3 OTHERS under CL1 - satisfies CL1 subdivision requirement!
+ops2.append(create_unit(parent=cl1_subdivision_tmp, dim=cl3_others, negative=False))
+
+# MUTATE 3: Individual shop exclusions (OTHERS already exists)
+ops3 = []
+for shop_name in shop_names:
+    ops3.append(create_unit(parent=cl1_actual, dim=cl3_shop, negative=True))
+```
+**Key Principle**: Each subdivision must have its OTHERS case sibling added in the SAME mutate operation using temporary resource names
+**Testing**: Verified on ad group 161157611033 - tree builds successfully with correct hierarchy
+**File**: campaign_processor.py lines 946-1154 (rebuild_tree_with_shop_exclusions function)
+_#claude-session:2025-11-21_
+
 ### Idempotent Campaign and Ad Group Creation
 **Pattern**: Check for existing resources before creation to enable safe re-runs without duplicates
 **Use Case**: Inclusion script needs to be re-runnable when adding new shops to existing campaigns
