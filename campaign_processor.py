@@ -1767,8 +1767,8 @@ def process_exclusion_sheet(
             continue
 
         # Skip rows that already have a status
-        status_value = row[COL_EX_STATUS].value
-        if status_value is not None and status_value != '':
+        status_cell = sheet.cell(row=idx, column=COL_EX_STATUS + 1)  # +1 because openpyxl is 1-indexed
+        if status_cell.value is not None and status_cell.value != '':
             continue
 
         # Extract values safely
@@ -1783,17 +1783,17 @@ def process_exclusion_sheet(
 
         # Validate required fields
         if not shop_name or not cat_uitsluiten or not custom_label_1 or not diepste_cat_id:
-            row[COL_EX_STATUS].value = False
-            row[COL_EX_ERROR].value = "Missing required fields"
+            sheet.cell(row=idx, column=COL_EX_STATUS + 1).value = False
+            sheet.cell(row=idx, column=COL_EX_ERROR + 1).value = "Missing required fields"
             continue
 
         # Group key: (cat_uitsluiten, custom_label_1)
         group_key = (cat_uitsluiten, str(custom_label_1))
 
-        # Add row and shop to group
+        # Add row and shop to group - store row number, not row tuple
         campaign_groups[group_key]['rows'].append({
             'idx': idx,
-            'row_obj': row
+            'row_number': idx
         })
         campaign_groups[group_key]['shops'].add(str(shop_name))
         # Store diepste_cat_id (should be same for all rows in group)
@@ -1846,9 +1846,9 @@ def process_exclusion_sheet(
                 print(f"   ❌ Campaign not found")
                 # Mark all rows in group as NOT_FOUND
                 for row_info in rows:
-                    row_info['row_obj'][COL_EX_STATUS].value = False
-                    # Brief message - campaign name is already visible in other columns
-                    row_info['row_obj'][COL_EX_ERROR].value = "Campaign not found"
+                    row_num = row_info['row_number']
+                    sheet.cell(row=row_num, column=COL_EX_STATUS + 1).value = False
+                    sheet.cell(row=row_num, column=COL_EX_ERROR + 1).value = "Campaign not found"
                     fail_count += 1
                 continue
 
@@ -1865,8 +1865,9 @@ def process_exclusion_sheet(
 
             # Mark all rows in group as SUCCESS
             for row_info in rows:
-                row_info['row_obj'][COL_EX_STATUS].value = True
-                row_info['row_obj'][COL_EX_ERROR].value = ""  # Clear error message
+                row_num = row_info['row_number']
+                sheet.cell(row=row_num, column=COL_EX_STATUS + 1).value = True
+                sheet.cell(row=row_num, column=COL_EX_ERROR + 1).value = ""  # Clear error message
                 success_count += 1
 
             groups_processed += 1
@@ -1898,8 +1899,9 @@ def process_exclusion_sheet(
                 error_msg = error_str[:80] if len(error_str) > 80 else error_str
 
             for row_info in rows:
-                row_info['row_obj'][COL_EX_STATUS].value = False
-                row_info['row_obj'][COL_EX_ERROR].value = error_msg
+                row_num = row_info['row_number']
+                sheet.cell(row=row_num, column=COL_EX_STATUS + 1).value = False
+                sheet.cell(row=row_num, column=COL_EX_ERROR + 1).value = error_msg
                 fail_count += 1
 
         # Save every N groups
