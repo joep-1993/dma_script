@@ -26,6 +26,8 @@ from google.ads.googleads.errors import GoogleAdsException
 import openpyxl
 from openpyxl import load_workbook
 from dotenv import load_dotenv
+import shutil
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -1712,6 +1714,7 @@ def process_exclusion_sheet(
     client: GoogleAdsClient,
     workbook: openpyxl.Workbook,
     customer_id: str,
+    file_path: str,
     save_interval: int = 10
 ):
     """
@@ -1725,6 +1728,7 @@ def process_exclusion_sheet(
         client: Google Ads client
         workbook: Excel workbook
         customer_id: Customer ID
+        file_path: Path to Excel file for saving
         save_interval: Save workbook every N campaign groups (default: 10)
     """
     print(f"\n{'='*70}")
@@ -1850,7 +1854,7 @@ def process_exclusion_sheet(
         if i % save_interval == 0:
             print(f"\n   💾 Saving progress... ({i}/{len(campaign_groups)} groups processed)")
             try:
-                workbook.save(EXCEL_FILE_PATH)
+                workbook.save(file_path)
                 print(f"   ✅ Progress saved successfully")
             except Exception as save_error:
                 print(f"   ⚠️  Error saving file: {save_error}")
@@ -1858,7 +1862,7 @@ def process_exclusion_sheet(
     # Final save
     print(f"\n   💾 Final save...")
     try:
-        workbook.save(EXCEL_FILE_PATH)
+        workbook.save(file_path)
         print(f"   ✅ Final save successful")
     except Exception as save_error:
         print(f"   ⚠️  Error on final save: {save_error}")
@@ -1893,10 +1897,30 @@ def main():
     # Initialize Google Ads client
     client = initialize_google_ads_client()
 
-    # Load Excel workbook
-    print(f"Loading Excel file: {EXCEL_FILE_PATH}")
+    # Create a working copy of the Excel file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    working_copy_path = EXCEL_FILE_PATH.replace(".xlsx", f"_working_copy_{timestamp}.xlsx")
+
+    print(f"\n{'='*70}")
+    print(f"CREATING WORKING COPY")
+    print(f"{'='*70}")
+    print(f"Original file: {EXCEL_FILE_PATH}")
+    print(f"Working copy:  {working_copy_path}")
+
     try:
-        workbook = load_workbook(EXCEL_FILE_PATH)
+        shutil.copy2(EXCEL_FILE_PATH, working_copy_path)
+        print(f"✅ Working copy created successfully")
+    except Exception as e:
+        print(f"❌ Error creating working copy: {e}")
+        sys.exit(1)
+
+    # Load Excel workbook from working copy
+    print(f"\n{'='*70}")
+    print(f"LOADING WORKING COPY")
+    print(f"{'='*70}")
+    print(f"Loading: {working_copy_path}")
+    try:
+        workbook = load_workbook(working_copy_path)
         print(f"✅ Excel file loaded successfully")
         print(f"   Available sheets: {workbook.sheetnames}")
     except Exception as e:
@@ -1905,28 +1929,27 @@ def main():
     '''
     # Process inclusion sheet
     try:
-        process_inclusion_sheet(client, workbook, CUSTOMER_ID)
+        process_inclusion_sheet(client, workbook, CUSTOMER_ID, working_copy_path)
     except Exception as e:
         print(f"❌ Error processing inclusion sheet: {e}")
     '''
 
     # Process exclusion sheet
     try:
-        process_exclusion_sheet(client, workbook, CUSTOMER_ID)
+        process_exclusion_sheet(client, workbook, CUSTOMER_ID, working_copy_path)
     except Exception as e:
         print(f"❌ Error processing exclusion sheet: {e}")
 
 
-    # Save workbook with updates
+    # Final save to working copy
     print(f"\n{'='*70}")
-    print("SAVING RESULTS")
+    print("SAVING FINAL RESULTS")
     print(f"{'='*70}")
-    try:
-        workbook.save(EXCEL_FILE_PATH)
-        print(f"✅ Excel file saved successfully: {EXCEL_FILE_PATH}")
-    except Exception as e:
-        print(f"❌ Error saving Excel file: {e}")
-        print(f"   You may need to close the file if it's open in Excel")
+    print(f"All results saved to working copy: {working_copy_path}")
+    print(f"Original file remains unchanged: {EXCEL_FILE_PATH}")
+    print(f"\nTo use the results, rename or copy the working copy to:")
+    print(f"  {EXCEL_FILE_PATH}")
+    print(f"{'='*70}")
 
     print(f"\n{'='*70}")
     print("PROCESSING COMPLETE")
