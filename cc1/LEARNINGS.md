@@ -1132,6 +1132,71 @@ def add_shopping_ad_group(client, customer_id, campaign_resource_name, ad_group_
 3. Build listing trees for new ad groups only
 _#claude-session:2025-11-19_
 
+### Case-Insensitive Shop Name Comparison for Exclusions
+**Problem**: When merging existing shop exclusions with new ones, duplicates were created due to case differences
+**Symptoms**: Google Ads API rejected the rebuild with `LISTING_GROUP_ALREADY_EXISTS` error when trying to add shops that already existed with different case
+**Root Cause**: Set comparison `shop not in existing_set` is case-sensitive. Existing exclusions stored as lowercase (e.g., `bobplaza.com`) but Excel had mixed case (`Bobplaza.com`)
+**Broken Code**:
+```python
+# Case-sensitive comparison - treats "Bobplaza.com" and "bobplaza.com" as different
+all_shop_exclusions = set(existing_shop_exclusions)
+for shop in shop_names:
+    if shop not in all_shop_exclusions:  # WRONG: case-sensitive
+        all_shop_exclusions.add(shop)
+# Result: both "bobplaza.com" and "Bobplaza.com" in set → API error
+```
+**Fixed Code**:
+```python
+# Case-insensitive comparison using lowercase mapping
+existing_lower = {shop.lower(): shop for shop in existing_shop_exclusions}
+all_shop_exclusions = set(existing_shop_exclusions)
+
+for shop in shop_names:
+    shop_lower = shop.lower()
+    if shop_lower not in existing_lower:  # CORRECT: case-insensitive
+        all_shop_exclusions.add(shop)
+        existing_lower[shop_lower] = shop
+
+# Sort case-insensitively for consistent ordering
+shop_names = sorted(all_shop_exclusions, key=str.lower)
+```
+**Benefits**: Prevents duplicate entries regardless of case, preserves original casing in Google Ads
+**File**: campaign_processor.py lines 1020-1039
+_#claude-session:2025-12-11_
+
+### Preserving Existing Shop Exclusions When Adding New Ones
+**Problem**: Script was removing existing CL3 shop exclusions when processing exclusion sheet
+**Symptoms**: Ad group with 8 shop exclusions ended up with only 4 after running script
+**Root Cause**: `rebuild_tree_with_shop_exclusions` function was only preserving item ID exclusions, not existing CL3 shop exclusions
+**Solution**: Read existing shop exclusions before rebuilding and merge with new ones:
+```python
+def rebuild_tree_with_shop_exclusions(client, customer_id, ad_group_id, shop_names, ...):
+    # Step 1: Read existing tree
+    existing_shop_exclusions = []
+    for row in results:
+        if case_value.product_custom_attribute:
+            index = case_value.product_custom_attribute.index.name
+            value = case_value.product_custom_attribute.value
+            # Capture existing CL3 shop exclusions (NEGATIVE units with value)
+            if index == 'INDEX3' and value:
+                if row.listing_group.type.name == 'UNIT' and row.negative:
+                    existing_shop_exclusions.append(value)
+
+    # Step 2: Merge with new exclusions (case-insensitive)
+    existing_lower = {shop.lower(): shop for shop in existing_shop_exclusions}
+    all_shop_exclusions = set(existing_shop_exclusions)
+    for shop in shop_names:
+        if shop.lower() not in existing_lower:
+            all_shop_exclusions.add(shop)
+    shop_names = sorted(all_shop_exclusions, key=str.lower)
+
+    # Step 3: Rebuild tree with merged exclusions
+    # ... rebuild using shop_names which now includes all exclusions ...
+```
+**Benefits**: Script is now additive - existing exclusions preserved while new ones are added
+**File**: campaign_processor.py lines 959-984, 1020-1039
+_#claude-session:2025-12-11_
+
 ### No Build Tools Benefits
 - Edit HTML/CSS/JS → Save → Refresh browser
 - No npm install delays

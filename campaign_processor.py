@@ -41,6 +41,7 @@ try:
         add_standard_shopping_campaign,
         add_shopping_ad_group,
         add_shopping_product_ad,
+        enable_negative_list_for_campaign,
     )
 except ImportError:
     print("⚠️  Warning: Could not import helper functions from google_ads_helpers.py")
@@ -53,6 +54,9 @@ except ImportError:
 CUSTOMER_ID = "3800751597"
 MCC_ACCOUNT_ID = "3011145605"  # MCC account where bid strategies are stored
 DEFAULT_BID_MICROS = 200_000  # €0.20
+
+# Negative keyword list to add to all created campaigns
+NEGATIVE_LIST_NAME = "DMA negatives"
 
 # Bid strategy mapping based on custom label 1
 BID_STRATEGY_MAPPING = {
@@ -70,8 +74,8 @@ def get_excel_path():
         str: Path to Excel file (WSL format for Linux, Windows format for Windows)
     """
     # Base Windows path
-    windows_path = "c:/Users/JoepvanSchagen/Downloads/dma_script_ivor.xlsx"
-    wsl_path = "/mnt/c/Users/JoepvanSchagen/Downloads/dma_script_ivor.xlsx"
+    windows_path = "c:/Users/JoepvanSchagen/Downloads/dma_script_koffiestore.xlsx"
+    wsl_path = "/mnt/c/Users/JoepvanSchagen/Downloads/dma_script_koffiestore.xlsx"
 
     system = platform.system().lower()
 
@@ -99,15 +103,26 @@ EXCEL_FILE_PATH = get_excel_path()
 SHEET_INCLUSION = "toevoegen"  # Inclusion sheet
 SHEET_EXCLUSION = "uitsluiten"  # Exclusion sheet
 
-# Column indices (0-based) - INCLUSION SHEET (toevoegen)
-COL_SHOP_NAME = 0      # Column A: Shop name
-COL_SHOP_ID = 1        # Column B: Shop ID
-COL_MAINCAT = 2        # Column C: maincat
-COL_MAINCAT_ID = 3     # Column D: maincat_id
-COL_CUSTOM_LABEL_1 = 4 # Column E: custom label 1
-COL_BUDGET = 5         # Column F: budget
-COL_STATUS = 6         # Column G: Status (TRUE/FALSE)
-COL_ERROR = 7          # Column H: Error message (when status is FALSE)
+# Column indices (0-based) - INCLUSION SHEET (toevoegen) - NEW STRUCTURE (v2)
+COL_CAMPAIGN_NAME = 0  # Column A: campaign_name
+COL_AD_GROUP_NAME = 1  # Column B: ad group_name (also used as shop_name for CL3)
+COL_SHOP_ID = 2        # Column C: Shop ID
+COL_MAINCAT = 3        # Column D: maincat
+COL_MAINCAT_ID = 4     # Column E: maincat_id (used as CL4)
+COL_CUSTOM_LABEL_1 = 5 # Column F: custom label 1
+COL_BUDGET = 6         # Column G: budget
+COL_STATUS = 7         # Column H: result (TRUE/FALSE)
+COL_ERROR = 8          # Column I: Error message (when status is FALSE)
+
+# Column indices (0-based) - INCLUSION SHEET (toevoegen) - LEGACY STRUCTURE
+COL_LEGACY_SHOP_NAME = 0      # Column A: Shop name
+COL_LEGACY_SHOP_ID = 1        # Column B: Shop ID
+COL_LEGACY_MAINCAT = 2        # Column C: maincat
+COL_LEGACY_MAINCAT_ID = 3     # Column D: maincat_id
+COL_LEGACY_CUSTOM_LABEL_1 = 4 # Column E: custom label 1
+COL_LEGACY_BUDGET = 5         # Column F: budget
+COL_LEGACY_STATUS = 6         # Column G: Status (TRUE/FALSE)
+COL_LEGACY_ERROR = 7          # Column H: Error message (when status is FALSE)
 
 # Column indices (0-based) - EXCLUSION SHEET (uitsluiten) - OLD STRUCTURE
 COL_EX_SHOP_NAME = 0      # Column A: Shop name
@@ -936,11 +951,12 @@ def rebuild_tree_with_shop_exclusions(
         print(f"   ❌ Error reading existing tree: {e}")
         raise
 
-    # Extract CL0, CL1, item IDs, and bid from existing tree
+    # Extract CL0, CL1, item IDs, existing shop exclusions, and bid from existing tree
     cl0_value = None
     cl1_value = None
     existing_bid = default_bid_micros
     item_id_exclusions = []  # List of item IDs to preserve
+    existing_shop_exclusions = []  # List of existing CL3 shop exclusions to preserve
 
     for row in results:
         case_value = row.ad_group_criterion.listing_group.case_value
@@ -961,6 +977,11 @@ def rebuild_tree_with_shop_exclusions(
                 cl0_value = value
             elif index == 'INDEX1' and value:
                 cl1_value = value
+            # Capture existing CL3 shop exclusions (NEGATIVE units with value, not OTHERS)
+            elif index == 'INDEX3' and value:
+                if (row.ad_group_criterion.listing_group.type.name == 'UNIT' and
+                    row.ad_group_criterion.negative):
+                    existing_shop_exclusions.append(value)
 
             # Capture existing bid from positive units only
             if (row.ad_group_criterion.listing_group.type.name == 'UNIT' and
@@ -989,10 +1010,34 @@ def rebuild_tree_with_shop_exclusions(
     if not cl1_value:
         raise Exception(f"Could not find CL1 value in existing tree and ad group name doesn't specify one")
 
+    # Log what we found
+    print(f"   Found existing structure: CL0={cl0_value}, CL1={cl1_value}, bid={existing_bid/10000:.2f}€")
+    if existing_shop_exclusions:
+        print(f"   Found {len(existing_shop_exclusions)} existing shop exclusion(s): {', '.join(existing_shop_exclusions)}")
     if item_id_exclusions:
-        print(f"   Found existing structure: CL0={cl0_value}, CL1={cl1_value}, bid={existing_bid/10000:.2f}€, {len(item_id_exclusions)} item ID exclusion(s)")
+        print(f"   Found {len(item_id_exclusions)} item ID exclusion(s)")
+
+    # Merge new shop exclusions with existing ones (preserve all existing)
+    # IMPORTANT: Use lowercase for comparison to avoid duplicates due to case differences
+    existing_lower = {shop.lower(): shop for shop in existing_shop_exclusions}  # Map lowercase to original
+    all_shop_exclusions = set(existing_shop_exclusions)  # Start with existing (preserve original case)
+    new_shops_added = []
+
+    for shop in shop_names:
+        shop_lower = shop.lower()
+        if shop_lower not in existing_lower:
+            all_shop_exclusions.add(shop)
+            existing_lower[shop_lower] = shop  # Track this one too
+            new_shops_added.append(shop)
+
+    if new_shops_added:
+        print(f"   Adding {len(new_shops_added)} new shop exclusion(s): {', '.join(new_shops_added)}")
     else:
-        print(f"   Found existing structure: CL0={cl0_value}, CL1={cl1_value}, bid={existing_bid/10000:.2f}€")
+        print(f"   No new shop exclusions to add (all {len(shop_names)} already exist)")
+
+    # Convert back to sorted list for consistent ordering (case-insensitive sort)
+    shop_names = sorted(all_shop_exclusions, key=str.lower)
+    print(f"   Total shop exclusions after merge: {len(shop_names)}")
 
     # Step 3: Remove entire tree
     safe_remove_entire_listing_tree(client, customer_id, str(ad_group_id))
@@ -1001,7 +1046,7 @@ def rebuild_tree_with_shop_exclusions(
     # Step 4: Rebuild tree with shop exclusions and preserved item IDs
     has_item_ids = len(item_id_exclusions) > 0
 
-    # Step 3: Rebuild tree with multiple shop exclusions
+    # Rebuild tree with multiple shop exclusions
     agc_service = client.get_service("AdGroupCriterionService")
 
     # MUTATE 1: Create ROOT + CL0 subdivision + CL0 OTHERS (satisfies CL0) + ROOT OTHERS
@@ -1144,10 +1189,10 @@ def rebuild_tree_with_shop_exclusions(
     ops3 = []
 
     # Add each shop as a negative CL3 unit
-    for shop_name in shop_names:
+    for shop in shop_names:
         dim_cl3_shop = client.get_type("ListingDimensionInfo")
         dim_cl3_shop.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
-        dim_cl3_shop.product_custom_attribute.value = str(shop_name)
+        dim_cl3_shop.product_custom_attribute.value = str(shop)
 
         ops3.append(
             create_listing_group_unit_biddable(
@@ -1238,9 +1283,26 @@ def build_listing_tree_for_inclusion(
     """
     print(f"      Building tree: Shop={shop_name}, Maincat ID={maincat_id}, CL1={custom_label_1}")
 
-    # Remove existing tree if any
-    safe_remove_entire_listing_tree(client, customer_id, ad_group_id)
-    # No sleep needed - API operations are synchronous
+    # Check if listing tree already exists - if so, skip to preserve exclusions
+    ga_service = client.get_service("GoogleAdsService")
+    ag_service = client.get_service("AdGroupService")
+    ag_path = ag_service.ad_group_path(customer_id, ad_group_id)
+
+    check_query = f"""
+        SELECT ad_group_criterion.resource_name
+        FROM ad_group_criterion
+        WHERE ad_group_criterion.ad_group = '{ag_path}'
+            AND ad_group_criterion.type = 'LISTING_GROUP'
+        LIMIT 1
+    """
+
+    try:
+        existing_tree = list(ga_service.search(customer_id=customer_id, query=check_query))
+        if existing_tree:
+            print(f"      ℹ️  Listing tree already exists - skipping to preserve exclusions")
+            return
+    except Exception:
+        pass  # No existing tree, proceed to create
 
     agc_service = client.get_service("AdGroupCriterionService")
 
@@ -1375,19 +1437,447 @@ def build_listing_tree_for_inclusion(
     print(f"      ✅ Tree created: Shop '{shop_name}' → Maincat '{maincat_id}' → CL1 '{custom_label_1}'")
 
 
+def build_listing_tree_for_inclusion_v2(
+    client: GoogleAdsClient,
+    customer_id: str,
+    ad_group_id: str,
+    shop_name: str,
+    maincat_ids: list,
+    default_bid_micros: int = DEFAULT_BID_MICROS
+):
+    """
+    Build listing tree for inclusion logic (V2 - NEW STRUCTURE):
+
+    Tree structure:
+    ROOT (subdivision)
+    ├─ Custom Label 3 = shop_name (subdivision)
+    │  ├─ Custom Label 4 = maincat_id_1 (unit, biddable, positive)
+    │  ├─ Custom Label 4 = maincat_id_2 (unit, biddable, positive)
+    │  ├─ ... (more maincat_ids)
+    │  └─ Custom Label 4 OTHERS (unit, negative)
+    └─ Custom Label 3 OTHERS (unit, negative)
+
+    Key differences from v1:
+    - No CL1 targeting (simpler structure)
+    - Multiple maincat_ids per ad group (all as positive units)
+    - shop_name = ad_group_name (same value)
+
+    IMPORTANT: This function will NOT rebuild the tree if one already exists,
+    to preserve any existing exclusions that may have been added.
+
+    Args:
+        client: Google Ads client
+        customer_id: Customer ID
+        ad_group_id: Ad group ID
+        shop_name: Shop name to target (custom label 3) - same as ad_group_name
+        maincat_ids: List of maincat IDs to target (custom label 4)
+        default_bid_micros: Default bid in micros
+    """
+    print(f"      Building tree: Shop={shop_name}, Maincat IDs={maincat_ids}")
+
+    # Check if listing tree already exists - if so, skip to preserve exclusions
+    ga_service = client.get_service("GoogleAdsService")
+    ag_service = client.get_service("AdGroupService")
+    ag_path = ag_service.ad_group_path(customer_id, ad_group_id)
+
+    check_query = f"""
+        SELECT ad_group_criterion.resource_name
+        FROM ad_group_criterion
+        WHERE ad_group_criterion.ad_group = '{ag_path}'
+            AND ad_group_criterion.type = 'LISTING_GROUP'
+        LIMIT 1
+    """
+
+    try:
+        existing_tree = list(ga_service.search(customer_id=customer_id, query=check_query))
+        if existing_tree:
+            print(f"      ℹ️  Listing tree already exists - skipping to preserve exclusions")
+            return
+    except Exception:
+        pass  # No existing tree, proceed to create
+
+    agc_service = client.get_service("AdGroupCriterionService")
+
+    # MUTATE 1: Create ROOT + CL3 subdivision + CL3 OTHERS + CL4 OTHERS
+    ops1 = []
+
+    # 1. ROOT SUBDIVISION
+    root_op = create_listing_group_subdivision(
+        client=client,
+        customer_id=customer_id,
+        ad_group_id=ad_group_id,
+        parent_ad_group_criterion_resource_name=None,
+        listing_dimension_info=None
+    )
+    root_tmp = root_op.create.resource_name
+    ops1.append(root_op)
+
+    # 2. Custom Label 3 subdivision (CL3 = shop_name)
+    dim_cl3 = client.get_type("ListingDimensionInfo")
+    dim_cl3.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
+    dim_cl3.product_custom_attribute.value = str(shop_name)
+
+    cl3_subdivision_op = create_listing_group_subdivision(
+        client=client,
+        customer_id=customer_id,
+        ad_group_id=ad_group_id,
+        parent_ad_group_criterion_resource_name=root_tmp,
+        listing_dimension_info=dim_cl3
+    )
+    cl3_subdivision_tmp = cl3_subdivision_op.create.resource_name
+    ops1.append(cl3_subdivision_op)
+
+    # 3. Custom Label 3 OTHERS (negative - blocks other shops)
+    dim_cl3_others = client.get_type("ListingDimensionInfo")
+    dim_cl3_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX3
+
+    ops1.append(
+        create_listing_group_unit_biddable(
+            client=client,
+            customer_id=customer_id,
+            ad_group_id=ad_group_id,
+            parent_ad_group_criterion_resource_name=root_tmp,
+            listing_dimension_info=dim_cl3_others,
+            targeting_negative=True,
+            cpc_bid_micros=None
+        )
+    )
+
+    # 4. Custom Label 4 OTHERS (negative - blocks other categories)
+    # Must be created in same mutate as CL3 subdivision
+    dim_cl4_others = client.get_type("ListingDimensionInfo")
+    dim_cl4_others.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX4
+
+    ops1.append(
+        create_listing_group_unit_biddable(
+            client=client,
+            customer_id=customer_id,
+            ad_group_id=ad_group_id,
+            parent_ad_group_criterion_resource_name=cl3_subdivision_tmp,
+            listing_dimension_info=dim_cl4_others,
+            targeting_negative=True,
+            cpc_bid_micros=None
+        )
+    )
+
+    # Execute first mutate
+    resp1 = agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops1)
+    cl3_subdivision_actual = resp1.results[1].resource_name  # Second result is CL3 subdivision
+
+    # MUTATE 2: Add all maincat_ids as positive CL4 units
+    ops2 = []
+
+    for maincat_id in maincat_ids:
+        dim_cl4 = client.get_type("ListingDimensionInfo")
+        dim_cl4.product_custom_attribute.index = client.enums.ProductCustomAttributeIndexEnum.INDEX4
+        dim_cl4.product_custom_attribute.value = str(maincat_id)
+
+        ops2.append(
+            create_listing_group_unit_biddable(
+                client=client,
+                customer_id=customer_id,
+                ad_group_id=ad_group_id,
+                parent_ad_group_criterion_resource_name=cl3_subdivision_actual,
+                listing_dimension_info=dim_cl4,
+                targeting_negative=False,  # POSITIVE - target this maincat
+                cpc_bid_micros=10_000  # 1 cent = €0.01 = 10,000 micros
+            )
+        )
+
+    # Execute second mutate
+    agc_service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops2)
+    print(f"      ✅ Tree created: Shop '{shop_name}' → {len(maincat_ids)} maincat(s)")
+
+
 # ============================================================================
 # EXCEL PROCESSING
 # ============================================================================
 
-def process_inclusion_sheet(
+def process_inclusion_sheet_v2(
+    client: GoogleAdsClient,
+    workbook: openpyxl.Workbook,
+    customer_id: str,
+    file_path: str = None
+):
+    """
+    Process the 'toevoegen' (inclusion) sheet - V2 (NEW STRUCTURE).
+
+    Excel columns (NEW):
+    A. campaign_name - Campaign name to create
+    B. ad group_name - Ad group name (also used as shop_name for CL3)
+    C. Shop ID
+    D. maincat
+    E. maincat_id - Used as Custom Label 4 (multiple per ad group)
+    F. custom label 1
+    G. budget (daily budget in EUR)
+    H. result (TRUE/FALSE) - updated by script
+
+    Groups rows by campaign_name first, then by ad_group_name within each campaign.
+    For each campaign:
+    1. Create campaign with name from column A (status: PAUSED)
+       - Uses budget from column G
+       - Applies bid strategy from MCC based on custom_label_1
+    2. For each unique ad_group_name within the campaign (status: ENABLED):
+       - Collect all maincat_ids for that ad group
+       - Build listing tree with shop_name (=ad_group_name) as CL3
+       - All maincat_ids as positive CL4 units
+    3. Update column H (result) with TRUE/FALSE per row
+
+    Args:
+        client: Google Ads client
+        workbook: Excel workbook
+        customer_id: Customer ID
+        file_path: Path to Excel file (for saving)
+    """
+    print(f"\n{'='*70}")
+    print(f"PROCESSING INCLUSION SHEET (V2): '{SHEET_INCLUSION}'")
+    print(f"{'='*70}\n")
+
+    try:
+        sheet = workbook[SHEET_INCLUSION]
+    except KeyError:
+        print(f"❌ Sheet '{SHEET_INCLUSION}' not found in workbook")
+        return
+
+    # Step 1: Read all rows and group by campaign_name, then by ad_group_name
+    campaigns = defaultdict(lambda: {
+        'ad_groups': defaultdict(lambda: {'maincat_ids': set(), 'shop_id': None, 'rows': []}),
+        'budget': None,
+        'custom_label_1': None,
+        'rows': []
+    })
+
+    print("Step 1: Reading and grouping rows by campaign and ad group...")
+    for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=False), start=2):
+        # Check if status column is empty
+        status_value = row[COL_STATUS].value if len(row) > COL_STATUS else None
+
+        # Skip rows that already have a status (TRUE/FALSE)
+        if status_value is not None and status_value != '':
+            continue
+
+        campaign_name = row[COL_CAMPAIGN_NAME].value
+        ad_group_name = row[COL_AD_GROUP_NAME].value
+        shop_id = row[COL_SHOP_ID].value
+        maincat = row[COL_MAINCAT].value
+        maincat_id = row[COL_MAINCAT_ID].value
+        custom_label_1 = row[COL_CUSTOM_LABEL_1].value
+        budget = row[COL_BUDGET].value
+
+        # Validate required fields
+        if not campaign_name or not ad_group_name or not maincat_id:
+            print(f"   ⚠️  [Row {idx}] Missing required fields (campaign_name/ad_group_name/maincat_id), skipping")
+            sheet.cell(row=idx, column=COL_STATUS + 1).value = False
+            sheet.cell(row=idx, column=COL_ERROR + 1).value = "Missing required fields"
+            continue
+
+        # Store campaign-level data
+        campaigns[campaign_name]['budget'] = budget
+        campaigns[campaign_name]['custom_label_1'] = custom_label_1
+        campaigns[campaign_name]['rows'].append({'idx': idx, 'row': row})
+
+        # Store ad group data - collect all maincat_ids for this ad group
+        campaigns[campaign_name]['ad_groups'][ad_group_name]['maincat_ids'].add(maincat_id)
+        campaigns[campaign_name]['ad_groups'][ad_group_name]['shop_id'] = shop_id
+        campaigns[campaign_name]['ad_groups'][ad_group_name]['rows'].append({'idx': idx, 'row': row})
+
+    print(f"   Found {len(campaigns)} campaign(s) to process")
+    total_ad_groups = sum(len(c['ad_groups']) for c in campaigns.values())
+    print(f"   Total ad groups: {total_ad_groups}\n")
+
+    # Step 2: Process each campaign
+    total_campaigns = len(campaigns)
+    successful_campaigns = 0
+
+    for campaign_idx, (campaign_name, campaign_data) in enumerate(campaigns.items(), start=1):
+        print(f"\n{'─'*70}")
+        print(f"CAMPAIGN {campaign_idx}/{total_campaigns}: {campaign_name}")
+        print(f"{'─'*70}")
+
+        budget_value = campaign_data['budget']
+        custom_label_1 = campaign_data['custom_label_1']
+        ad_groups = campaign_data['ad_groups']
+
+        print(f"   Budget: {budget_value} EUR")
+        print(f"   Custom Label 1: {custom_label_1}")
+        print(f"   Ad Groups: {len(ad_groups)}")
+
+        try:
+            # Campaign configuration
+            merchant_center_account_id = 140784594  # Merchant Center ID
+            budget_name = f"Budget_{campaign_name}"
+            tracking_template = ""
+            country = "NL"
+
+            # Convert budget from EUR to micros
+            try:
+                budget_micros = int(float(budget_value) * 1_000_000) if budget_value else 10_000_000
+            except (ValueError, TypeError):
+                print(f"   ⚠️  Invalid budget value '{budget_value}', using default 10 EUR")
+                budget_micros = 10_000_000
+
+            # Get bid strategy based on custom label 1
+            bid_strategy_resource_name = None
+            if custom_label_1 and custom_label_1 in BID_STRATEGY_MAPPING:
+                bid_strategy_name = BID_STRATEGY_MAPPING[custom_label_1]
+                print(f"   Looking up bid strategy: {bid_strategy_name}")
+                bid_strategy_resource_name = get_bid_strategy_by_name(
+                    client=client,
+                    customer_id=MCC_ACCOUNT_ID,
+                    strategy_name=bid_strategy_name
+                )
+
+            # Get first ad group's shop info for campaign metadata
+            first_ag_name = list(ad_groups.keys())[0]
+            first_ag_data = ad_groups[first_ag_name]
+
+            # Create campaign (status: PAUSED - set in add_standard_shopping_campaign)
+            print(f"\n   Creating campaign: {campaign_name}")
+            campaign_resource_name = add_standard_shopping_campaign(
+                client=client,
+                customer_id=customer_id,
+                merchant_center_account_id=merchant_center_account_id,
+                campaign_name=campaign_name,
+                budget_name=budget_name,
+                tracking_template=tracking_template,
+                country=country,
+                shopid=first_ag_data['shop_id'],
+                shopname=first_ag_name,
+                label=custom_label_1,
+                budget=budget_micros,
+                bidding_strategy_resource_name=bid_strategy_resource_name
+            )
+
+            if not campaign_resource_name:
+                raise Exception("Failed to create/find campaign")
+
+            print(f"   ✅ Campaign ready: {campaign_resource_name}")
+
+            # Add negative keyword list to campaign
+            if NEGATIVE_LIST_NAME:
+                enable_negative_list_for_campaign(
+                    client=client,
+                    customer_id=customer_id,
+                    campaign_resource_name=campaign_resource_name,
+                    negative_list_name=NEGATIVE_LIST_NAME
+                )
+
+            # Process each ad group within this campaign
+            print(f"\n   Processing {len(ad_groups)} ad group(s)...")
+            ad_groups_processed = []
+            ad_group_errors = {}
+
+            for ag_idx, (ag_name, ag_data) in enumerate(ad_groups.items(), start=1):
+                print(f"\n   ──── Ad Group {ag_idx}/{len(ad_groups)}: {ag_name} ────")
+
+                try:
+                    maincat_ids = sorted(ag_data['maincat_ids'])
+                    print(f"      Maincat IDs (CL4): {maincat_ids}")
+
+                    # Create ad group (status: ENABLED - set in add_shopping_ad_group)
+                    ad_group_resource_name, _ = add_shopping_ad_group(
+                        client=client,
+                        customer_id=customer_id,
+                        campaign_resource_name=campaign_resource_name,
+                        ad_group_name=ag_name,
+                        campaign_name=campaign_name
+                    )
+
+                    if not ad_group_resource_name:
+                        raise Exception(f"Failed to create/find ad group")
+
+                    print(f"      ✅ Ad group ready: {ad_group_resource_name}")
+
+                    # Extract ad group ID
+                    ad_group_id = ad_group_resource_name.split('/')[-1]
+
+                    # Build listing tree with V2 function
+                    # shop_name = ad_group_name (same value)
+                    build_listing_tree_for_inclusion_v2(
+                        client=client,
+                        customer_id=customer_id,
+                        ad_group_id=ad_group_id,
+                        shop_name=ag_name,  # ad_group_name = shop_name for CL3
+                        maincat_ids=maincat_ids
+                    )
+
+                    # Create shopping product ad
+                    print(f"      Creating shopping product ad...")
+                    add_shopping_product_ad(
+                        client=client,
+                        customer_id=customer_id,
+                        ad_group_resource_name=ad_group_resource_name
+                    )
+
+                    ad_groups_processed.append(ag_name)
+                    print(f"      ✅ Ad group completed: {ag_name}")
+
+                    time.sleep(0.5)
+
+                except Exception as e:
+                    error_msg = str(e)
+                    print(f"      ❌ Failed: {error_msg}")
+                    ad_group_errors[ag_name] = error_msg
+
+            # Mark rows as successful/failed
+            for ag_name, ag_data in ad_groups.items():
+                for row_info in ag_data['rows']:
+                    row_num = row_info['idx']
+                    if ag_name in ad_groups_processed:
+                        sheet.cell(row=row_num, column=COL_STATUS + 1).value = True
+                        sheet.cell(row=row_num, column=COL_ERROR + 1).value = ""
+                    else:
+                        sheet.cell(row=row_num, column=COL_STATUS + 1).value = False
+                        error_msg = ad_group_errors.get(ag_name, "Failed to process ad group")
+                        sheet.cell(row=row_num, column=COL_ERROR + 1).value = error_msg[:100]
+
+            if len(ad_groups_processed) > 0:
+                successful_campaigns += 1
+                print(f"\n   ✅ CAMPAIGN COMPLETED: {len(ad_groups_processed)}/{len(ad_groups)} ad groups processed")
+
+        except Exception as e:
+            error_msg = str(e)
+            print(f"\n   ❌ CAMPAIGN FAILED: {error_msg}")
+            # Mark all rows for this campaign as failed
+            for row_info in campaign_data['rows']:
+                row_num = row_info['idx']
+                sheet.cell(row=row_num, column=COL_STATUS + 1).value = False
+                sheet.cell(row=row_num, column=COL_ERROR + 1).value = f"Campaign failed: {error_msg[:80]}"
+
+        # Save periodically
+        if file_path and campaign_idx % 5 == 0:
+            print(f"\n   💾 Saving progress...")
+            try:
+                workbook.save(file_path)
+            except Exception as save_error:
+                print(f"   ⚠️  Error saving: {save_error}")
+
+    # Final save
+    if file_path:
+        print(f"\n💾 Final save...")
+        try:
+            workbook.save(file_path)
+        except Exception as save_error:
+            print(f"⚠️  Error on final save: {save_error}")
+
+    print(f"\n{'='*70}")
+    print(f"INCLUSION SHEET (V2) SUMMARY")
+    print(f"{'='*70}")
+    print(f"Total campaigns: {total_campaigns}")
+    print(f"✅ Successful: {successful_campaigns}")
+    print(f"❌ Failed: {total_campaigns - successful_campaigns}")
+    print(f"{'='*70}\n")
+
+
+def process_inclusion_sheet_legacy(
     client: GoogleAdsClient,
     workbook: openpyxl.Workbook,
     customer_id: str
 ):
     """
-    Process the 'toevoegen' (inclusion) sheet.
+    Process the 'toevoegen' (inclusion) sheet - LEGACY VERSION.
 
-    Excel columns:
+    Excel columns (OLD):
     A. Shop name
     B. Shop ID
     C. maincat
@@ -1416,7 +1906,7 @@ def process_inclusion_sheet(
         customer_id: Customer ID
     """
     print(f"\n{'='*70}")
-    print(f"PROCESSING INCLUSION SHEET: '{SHEET_INCLUSION}'")
+    print(f"PROCESSING INCLUSION SHEET (LEGACY): '{SHEET_INCLUSION}'")
     print(f"{'='*70}\n")
 
     try:
@@ -1426,35 +1916,34 @@ def process_inclusion_sheet(
         return
 
     # Step 1: Read all rows and group by (maincat, custom_label_1) only
-    from collections import defaultdict
     groups = defaultdict(list)  # key: (maincat, custom_label_1), value: list of row data
 
     print("Step 1: Reading and grouping rows...")
     for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=False), start=2):
         # Check if status column (G) is empty - if so, this is where we start processing
-        status_value = row[COL_STATUS].value
+        status_value = row[COL_LEGACY_STATUS].value
 
         # Skip rows that already have a status (TRUE/FALSE)
         if status_value is not None and status_value != '':
             continue
 
-        shop_name = row[COL_SHOP_NAME].value
-        shop_id = row[COL_SHOP_ID].value
-        maincat = row[COL_MAINCAT].value
-        maincat_id = row[COL_MAINCAT_ID].value
-        custom_label_1 = row[COL_CUSTOM_LABEL_1].value
-        budget = row[COL_BUDGET].value
+        shop_name = row[COL_LEGACY_SHOP_NAME].value
+        shop_id = row[COL_LEGACY_SHOP_ID].value
+        maincat = row[COL_LEGACY_MAINCAT].value
+        maincat_id = row[COL_LEGACY_MAINCAT_ID].value
+        custom_label_1 = row[COL_LEGACY_CUSTOM_LABEL_1].value
+        budget = row[COL_LEGACY_BUDGET].value
 
         # Validate required fields
         if not shop_name or not maincat or not maincat_id or not custom_label_1:
             print(f"   ⚠️  [Row {idx}] Missing required fields (shop_name/maincat/maincat_id/custom_label_1), skipping")
-            row[COL_STATUS].value = False
+            row[COL_LEGACY_STATUS].value = False
             # Only write to error column if it exists
-            if len(row) > COL_ERROR:
-                row[COL_ERROR].value = "Missing required fields (shop_name/maincat/maincat_id/custom_label_1)"
+            if len(row) > COL_LEGACY_ERROR:
+                row[COL_LEGACY_ERROR].value = "Missing required fields (shop_name/maincat/maincat_id/custom_label_1)"
             continue
 
-        # NEW: Group by (maincat, custom_label_1) only - multiple shops per campaign
+        # Group by (maincat, custom_label_1) only - multiple shops per campaign
         group_key = (maincat, custom_label_1)
 
         # Store row data
@@ -1498,7 +1987,7 @@ def process_inclusion_sheet(
         print(f"   Unique shops in group: {len(unique_shops)}")
 
         try:
-            # NEW: Build campaign name: PLA/{maincat} store_{custom_label_1}
+            # Build campaign name: PLA/{maincat} store_{custom_label_1}
             campaign_name = f"PLA/{maincat} store_{custom_label_1}"
             print(f"\n   Step 1: Checking for existing campaign or creating new: {campaign_name}")
 
@@ -1551,7 +2040,7 @@ def process_inclusion_sheet(
 
             print(f"   Campaign resource: {campaign_resource_name}")
 
-            # NEW: Check/create multiple ad groups - one for each unique shop
+            # Check/create multiple ad groups - one for each unique shop
             print(f"\n   Step 2: Processing ad groups for {len(unique_shops)} shop(s)...")
             shops_processed_successfully = []
             shop_errors = {}  # Track errors per shop
@@ -1564,7 +2053,7 @@ def process_inclusion_sheet(
                     ad_group_name = f"PLA/{shop_name}_{custom_label_1}"
                     print(f"      Checking/creating ad group: {ad_group_name}")
 
-                    ad_group_resource_name, was_created = add_shopping_ad_group(
+                    ad_group_resource_name, _ = add_shopping_ad_group(
                         client=client,
                         customer_id=customer_id,
                         campaign_resource_name=campaign_resource_name,
@@ -1619,18 +2108,18 @@ def process_inclusion_sheet(
             # Mark rows as successful/failed based on their shop
             for row_data in rows_in_group:
                 if row_data['shop_name'] in shops_processed_successfully:
-                    row_data['row_obj'][COL_STATUS].value = True
+                    row_data['row_obj'][COL_LEGACY_STATUS].value = True
                     # Clear error message on success (only if column exists)
-                    if len(row_data['row_obj']) > COL_ERROR:
-                        row_data['row_obj'][COL_ERROR].value = ""
+                    if len(row_data['row_obj']) > COL_LEGACY_ERROR:
+                        row_data['row_obj'][COL_LEGACY_ERROR].value = ""
                 else:
-                    row_data['row_obj'][COL_STATUS].value = False
+                    row_data['row_obj'][COL_LEGACY_STATUS].value = False
                     # Add error message if available (only if column exists)
-                    if len(row_data['row_obj']) > COL_ERROR:
+                    if len(row_data['row_obj']) > COL_LEGACY_ERROR:
                         if row_data['shop_name'] in shop_errors:
-                            row_data['row_obj'][COL_ERROR].value = shop_errors[row_data['shop_name']]
+                            row_data['row_obj'][COL_LEGACY_ERROR].value = shop_errors[row_data['shop_name']]
                         else:
-                            row_data['row_obj'][COL_ERROR].value = "Failed to process shop"
+                            row_data['row_obj'][COL_LEGACY_ERROR].value = "Failed to process shop"
 
             if len(shops_processed_successfully) > 0:
                 successful_groups += 1
@@ -1641,13 +2130,13 @@ def process_inclusion_sheet(
             print(f"\n   ❌ GROUP {group_idx} FAILED: {error_msg}")
             # Mark all rows in this group as failed
             for row_data in rows_in_group:
-                row_data['row_obj'][COL_STATUS].value = False
+                row_data['row_obj'][COL_LEGACY_STATUS].value = False
                 # Only write error message if column exists
-                if len(row_data['row_obj']) > COL_ERROR:
-                    row_data['row_obj'][COL_ERROR].value = f"Group failed: {error_msg}"
+                if len(row_data['row_obj']) > COL_LEGACY_ERROR:
+                    row_data['row_obj'][COL_LEGACY_ERROR].value = f"Group failed: {error_msg}"
 
     print(f"\n{'='*70}")
-    print(f"INCLUSION SHEET SUMMARY: {successful_groups}/{total_groups} groups processed successfully")
+    print(f"INCLUSION SHEET (LEGACY) SUMMARY: {successful_groups}/{total_groups} groups processed successfully")
     print(f"{'='*70}\n")
 
 
@@ -1980,14 +2469,15 @@ def main():
     except Exception as e:
         print(f"❌ Error loading Excel file: {e}")
         sys.exit(1)
+
     '''
-    # Process inclusion sheet
+    # Process inclusion sheet (V2 - new structure)
     try:
-        process_inclusion_sheet(client, workbook, CUSTOMER_ID, working_copy_path)
+        process_inclusion_sheet_v2(client, workbook, CUSTOMER_ID, working_copy_path)
     except Exception as e:
         print(f"❌ Error processing inclusion sheet: {e}")
-    '''
 
+    '''
     # Process exclusion sheet
     try:
         process_exclusion_sheet(client, workbook, CUSTOMER_ID, working_copy_path)
