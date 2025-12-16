@@ -14,6 +14,26 @@ _Tasks currently being worked on (max 1-2 items)_
 ## Completed
 _Recently finished tasks_
 
+- [x] Create uitbreiding (extension) script for adding shops to category campaigns #claude-session:2025-12-16 #priority:high
+  - New process_uitbreiding_sheet() function
+  - Campaign naming: PLA/{maincat} store_{cl1} (e.g., "PLA/Klussen store_a")
+  - Ad group naming: PLA/{shop_name}_{cl1} (e.g., "PLA/Coolblue.nl_a")
+  - Listing tree structure: ROOT → CL1 → CL3 (shop) → CL4 (maincat)
+  - Creates campaigns if not found (with bid strategy + negative keyword list)
+  - Excel columns: Shop name, Shop ID, maincat, maincat_id, cl1, budget, result
+- [x] Create exclusion script V2 with cat_ids mapping #claude-session:2025-12-16 #priority:high
+  - New process_exclusion_sheet_v2() function with cat_ids sheet lookup
+  - Maps maincat_id → list of deepest_cat values from cat_ids sheet
+  - For each deepest_cat, finds campaign PLA/{deepest_cat}_{cl1}
+  - Adds shop as CL3 exclusion to ad groups in matching campaigns
+  - New add_shop_exclusion_to_ad_group() function for single exclusion
+  - Excel columns: Shop name, Shop ID, maincat, maincat_id, cl1, result
+  - cat_ids columns: maincat, maincat_id, deepest_cat, cat_id
+- [x] Add rate limiting to prevent CONCURRENT_MODIFICATION errors #claude-session:2025-12-16 #priority:medium
+  - Added 2s sleep between mutate operations in tree building
+  - Added 2s sleep after tree creation before ad creation
+  - Added 2s sleep between rows
+  - Added 1s sleep between ad groups and campaigns in exclusion processing
 - [x] Fix tuple index out of range error when writing to column G #claude-session:2025-11-21 #priority:critical
   - Changed from row tuple indexing to sheet.cell() method for writing status/errors
   - Root cause: iter_rows() returns tuples of existing cells only, accessing non-existent columns failed

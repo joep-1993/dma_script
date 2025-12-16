@@ -1197,6 +1197,65 @@ def rebuild_tree_with_shop_exclusions(client, customer_id, ad_group_id, shop_nam
 **File**: campaign_processor.py lines 959-984, 1020-1039
 _#claude-session:2025-12-11_
 
+### Uitbreiding Script - Adding Shops to Category Campaigns
+**Pattern**: Create campaigns per category/CL1 and add shop-specific ad groups with targeting
+**Campaign Naming**: `PLA/{maincat} store_{cl1}` (e.g., "PLA/Klussen store_a")
+**Ad Group Naming**: `PLA/{shop_name}_{cl1}` (e.g., "PLA/Coolblue.nl_a")
+**Listing Tree Structure**:
+```
+ROOT (subdivision)
+└─ CL1 = 'a' (subdivision)
+   ├─ CL3 = shop_name (subdivision)
+   │  ├─ CL4 = maincat_id (unit, positive, biddable)
+   │  └─ CL4 OTHERS (unit, negative)
+   └─ CL3 OTHERS (unit, negative)
+└─ CL1 OTHERS (unit, negative)
+```
+**Excel Columns**: Shop name, Shop ID, maincat, maincat_id, cl1, budget, result
+**Features**:
+- Creates campaign if not found (with bid strategy from MCC + negative keyword list)
+- Creates ad group if not found
+- Builds listing tree targeting CL1, CL3 (shop), CL4 (maincat)
+- Idempotent: skips rows already processed (checks result column)
+**File**: campaign_processor.py process_uitbreiding_sheet() and build_listing_tree_for_uitbreiding()
+_#claude-session:2025-12-16_
+
+### Exclusion Script V2 - Using cat_ids Mapping Sheet
+**Pattern**: Map maincat_id to deepest_cat values, then add shop exclusions to matching campaigns
+**Use Case**: Exclude a shop from all campaigns under a specific maincat_id
+**Excel Columns (uitsluiten)**: Shop name, Shop ID, maincat, maincat_id, cl1, result
+**Excel Columns (cat_ids)**: maincat, maincat_id, deepest_cat, cat_id
+**Campaign Naming**: `PLA/{deepest_cat}_{cl1}` (e.g., "PLA/Elektronica_a")
+**Process Flow**:
+1. Load cat_ids sheet into mapping: {maincat_id: [deepest_cat1, deepest_cat2, ...]}
+2. For each row in uitsluiten, get shop_name, maincat_id, cl1
+3. Look up all deepest_cats for that maincat_id
+4. For each deepest_cat, find campaign PLA/{deepest_cat}_{cl1}
+5. Find ad group(s) in that campaign
+6. Add shop_name as CL3 exclusion (negative unit) to the ad group's listing tree
+**Implementation**:
+```python
+def add_shop_exclusion_to_ad_group(client, customer_id, ad_group_id, shop_name):
+    # 1. Read existing tree to find CL1 subdivision (parent for CL3)
+    # 2. Check if shop already excluded (case-insensitive)
+    # 3. Add new CL3 negative unit under CL1 subdivision
+```
+**File**: campaign_processor.py process_exclusion_sheet_v2(), add_shop_exclusion_to_ad_group(), load_cat_ids_mapping()
+_#claude-session:2025-12-16_
+
+### Rate Limiting for CONCURRENT_MODIFICATION Prevention
+**Problem**: CONCURRENT_MODIFICATION errors when multiple mutate operations happen too quickly
+**Solution**: Add time.sleep() between operations
+**Recommended Delays**:
+- Between mutate operations in tree building: 2 seconds
+- After tree creation, before ad creation: 2 seconds
+- Between rows: 2 seconds
+- Between ad groups in exclusion processing: 1 second
+- Between campaigns in exclusion processing: 1 second
+**Trade-off**: Slower processing but much higher success rate
+**File**: campaign_processor.py build_listing_tree_for_uitbreiding(), process_uitbreiding_sheet(), process_exclusion_sheet_v2()
+_#claude-session:2025-12-16_
+
 ### No Build Tools Benefits
 - Edit HTML/CSS/JS → Save → Refresh browser
 - No npm install delays
