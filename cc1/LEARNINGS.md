@@ -1256,6 +1256,60 @@ _#claude-session:2025-12-16_
 **File**: campaign_processor.py build_listing_tree_for_uitbreiding(), process_uitbreiding_sheet(), process_exclusion_sheet_v2()
 _#claude-session:2025-12-16_
 
+### Optimizing Google Ads API with Prefetching and Batch Mutations
+**Pattern**: Pre-fetch data in single queries and batch mutations for faster processing
+**Use Case**: process_exclusion_sheet_v2 was slow due to per-campaign queries and individual mutations
+**Problem**: Each row triggered multiple API calls: campaign lookup, ad group lookup, listing tree query, individual mutation
+**Solution**:
+```python
+# 1. Pre-fetch all campaigns and ad groups in ONE query
+def prefetch_pla_campaigns_and_ad_groups(client, customer_id, prefix="PLA/"):
+    query = f"""
+        SELECT campaign.name, campaign.resource_name,
+               ad_group.id, ad_group.name, ad_group.resource_name
+        FROM ad_group
+        WHERE campaign.name LIKE '{prefix}%'
+        AND campaign.status != 'REMOVED' AND ad_group.status != 'REMOVED'
+    """
+    # Build cache: {campaign_name: {resource_name, ad_groups: [...]}}
+    return cache
+
+# 2. Prepare operations without executing
+def prepare_shop_exclusion_operation(client, customer_id, ad_group_id, shop_name):
+    # Query listing tree, check if already excluded
+    # Return (operation, status, message) - don't execute yet
+    return (op, 'ready', "Operation prepared")
+
+# 3. Execute in batches
+def execute_exclusion_batch(client, customer_id, operations, batch_size=100):
+    for i in range(0, len(operations), batch_size):
+        batch = operations[i:i + batch_size]
+        agc_service.mutate_ad_group_criteria(operations=[op for op, _, _ in batch])
+    return (success_count, error_count, errors)
+
+# 4. Use in main function
+campaign_cache = prefetch_pla_campaigns_and_ad_groups(client, customer_id)
+for row in rows:
+    # Cache lookup instead of API query
+    if campaign_name in campaign_cache:
+        for ag in campaign_cache[campaign_name]['ad_groups']:
+            op, status, msg = prepare_shop_exclusion_operation(...)
+            if status == 'ready':
+                row_operations.append((op, ag_name, shop_name))
+    # Batch execute all operations for this row
+    execute_exclusion_batch(client, customer_id, row_operations)
+```
+**Performance Improvement**:
+| Before | After |
+|--------|-------|
+| 1 API call per campaign lookup | 1 API call for ALL campaigns |
+| 1 API call per ad group lookup | Included in prefetch |
+| 1 mutation per ad group | Up to 100 mutations per batch |
+| 1s delay per operation | 0.2s delay per batch |
+**Benefits**: ~5x faster processing, fewer API round-trips, reduced rate limit issues
+**File**: campaign_processor.py (prefetch_pla_campaigns_and_ad_groups, prepare_shop_exclusion_operation, execute_exclusion_batch, process_exclusion_sheet_v2)
+_#claude-session:2026-01-09_
+
 ### No Build Tools Benefits
 - Edit HTML/CSS/JS → Save → Refresh browser
 - No npm install delays

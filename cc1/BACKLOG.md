@@ -34,12 +34,13 @@ _What are we building and why?_
   - Trade-off: 0.2s causes 74% failure rate, but acceptable for fast bulk with retry
   - Recommendation: Use 0.2s + smart delays for bulk ops, 0.5s for higher reliability
   _#claude-session:2025-11-19_
-- [ ] Optimize listing tree operations with bulk mutations #priority:medium
-  - Current implementation uses separate mutate operations for each level
-  - Could combine more operations into single mutate where possible
-  - Reduce API calls and improve performance for large trees
-  - Consider batching multiple ad group tree operations
-  _#claude-session:2025-11-12_
+- [x] Optimize listing tree operations with bulk mutations #priority:medium
+  - ✅ Implemented prefetch_pla_campaigns_and_ad_groups() - single query for all campaigns/ad groups
+  - ✅ Implemented prepare_shop_exclusion_operation() - prepare without executing
+  - ✅ Implemented execute_exclusion_batch() - batch up to 10 operations per API call
+  - ✅ Updated process_exclusion_sheet_v2 to use caching and batching
+  - Note: Batch size limited to 10 due to Google Ads API "too many shopping ad groups" error
+  _#claude-session:2025-11-12, completed:2026-01-09_
 - [ ] Better handling of complex tree hierarchies #priority:medium
   - Current code assumes max 3 levels (CL1 → CL0 → CL3)
   - Add support for arbitrary depth hierarchies

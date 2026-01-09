@@ -17,6 +17,11 @@ dma-shop-campaigns/
 │   ├── BACKLOG.md                # Future planning
 │   └── PROJECT_INDEX.md          # This file
 ├── campaign_processor.py         # ⭐ Main script - Google Ads campaign automation (with incremental saving & rate limiting)
+│                                 #    New functions (2026-01-09):
+│                                 #    - prefetch_pla_campaigns_and_ad_groups() - single-query campaign/ad group caching
+│                                 #    - prepare_shop_exclusion_operation() - prepare ops without executing
+│                                 #    - execute_exclusion_batch() - batch mutations (up to 10 per call)
+│                                 #    - process_exclusion_sheet_v2 OPTIMIZED with caching and batching
 ├── google_ads_helpers.py         # Helper functions for listing tree operations (optimized lines 81-123: 25-30% faster tree removal)
 ├── test_google_ads_init.py       # Test script for credentials verification
 ├── test_campaign_processor.py    # Test script for setup validation

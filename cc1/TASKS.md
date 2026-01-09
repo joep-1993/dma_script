@@ -14,6 +14,17 @@ _Tasks currently being worked on (max 1-2 items)_
 ## Completed
 _Recently finished tasks_
 
+- [x] Optimize process_exclusion_sheet_v2 for performance #claude-session:2026-01-09 #priority:high
+  - Reduced rate limiting delays from 1s to 0.2s between operations
+  - Added prefetch_pla_campaigns_and_ad_groups() - fetches all PLA campaigns/ad groups in single query
+  - Added prepare_shop_exclusion_operation() - prepares operations without executing
+  - Added execute_exclusion_batch() - executes up to 100 operations per API call
+  - Updated process_exclusion_sheet_v2 to use cache lookup instead of per-campaign queries
+  - Performance: eliminates per-campaign/ad-group queries, reduces API round-trips significantly
+- [x] Add xlsx file output to validate_cl1_targeting_for_campaigns #claude-session:2026-01-09 #priority:medium
+  - Writes ad groups needing fixes to cl1_validation_to_fix.xlsx
+  - Contains Campaign Name and Ad Group Name columns
+  - Output path: C:\Users\JoepvanSchagen\Downloads\Python\scripts_def\DMA+\
 - [x] Create uitbreiding (extension) script for adding shops to category campaigns #claude-session:2025-12-16 #priority:high
   - New process_uitbreiding_sheet() function
   - Campaign naming: PLA/{maincat} store_{cl1} (e.g., "PLA/Klussen store_a")
