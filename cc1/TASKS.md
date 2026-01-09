@@ -14,11 +14,17 @@ _Tasks currently being worked on (max 1-2 items)_
 ## Completed
 _Recently finished tasks_
 
+- [x] Add fallback to rebuild_tree_with_shop_exclusions for trees without CL3 structure #claude-session:2026-01-09 #priority:high
+  - Trees with structure ROOT → CL0 → CL1 (no CL3) can't have CL3 added as sibling
+  - Error: "Dimension type of listing group must be the same as that of its siblings"
+  - Solution: When prepare_shop_exclusion_operation fails with "No parent for CL3", fall back to full tree rebuild
+  - rebuild_tree_with_shop_exclusions restructures tree to: ROOT → CL0 → CL1 → CL3 (shop exclusions)
+  - Tested successfully on ad group 162623549191
 - [x] Optimize process_exclusion_sheet_v2 for performance #claude-session:2026-01-09 #priority:high
   - Reduced rate limiting delays from 1s to 0.2s between operations
   - Added prefetch_pla_campaigns_and_ad_groups() - fetches all PLA campaigns/ad groups in single query
   - Added prepare_shop_exclusion_operation() - prepares operations without executing
-  - Added execute_exclusion_batch() - executes up to 100 operations per API call
+  - Added execute_exclusion_batch() - executes up to 10 operations per API call (reduced from 100 due to API limit)
   - Updated process_exclusion_sheet_v2 to use cache lookup instead of per-campaign queries
   - Performance: eliminates per-campaign/ad-group queries, reduces API round-trips significantly
 - [x] Add xlsx file output to validate_cl1_targeting_for_campaigns #claude-session:2026-01-09 #priority:medium

@@ -2809,16 +2809,15 @@ def add_shop_exclusion_to_ad_group(
         print(f"      ⚠️  No listing tree found in ad group {ad_group_id}")
         return False
 
-    # Find the CL1 subdivision (parent for CL3 nodes)
-    cl1_subdivision_resource = None
+    # Find parent for CL3 nodes (by looking at existing CL3 nodes including CL3 OTHERS)
+    parent_for_cl3 = None
     existing_cl3_exclusions = set()
-    cl3_others_exists = False
 
     for row in results:
         criterion = row.ad_group_criterion
         lg = criterion.listing_group
 
-        # Check for CL3 nodes (INDEX3)
+        # Check for CL3 nodes (INDEX3) - get parent from any CL3 node
         if lg.case_value.product_custom_attribute.index.name == 'INDEX3':
             value = lg.case_value.product_custom_attribute.value
 
@@ -2826,16 +2825,13 @@ def add_shop_exclusion_to_ad_group(
                 # This is a specific CL3 value (shop name)
                 if criterion.negative:
                     existing_cl3_exclusions.add(value.lower())
-            else:
-                # This is CL3 OTHERS
-                cl3_others_exists = True
 
-            # Get the parent (should be CL1 subdivision)
+            # Get the parent of any CL3 node - this is where we add new CL3 exclusions
             if lg.parent_ad_group_criterion:
-                cl1_subdivision_resource = lg.parent_ad_group_criterion
+                parent_for_cl3 = lg.parent_ad_group_criterion
 
-    if not cl1_subdivision_resource:
-        print(f"      ⚠️  Could not find CL1 subdivision in ad group {ad_group_id}")
+    if not parent_for_cl3:
+        print(f"      ⚠️  No parent for CL3 found in ad group {ad_group_id}")
         return False
 
     # Check if shop is already excluded
@@ -2852,7 +2848,7 @@ def add_shop_exclusion_to_ad_group(
         client=client,
         customer_id=customer_id,
         ad_group_id=ad_group_id,
-        parent_ad_group_criterion_resource_name=cl1_subdivision_resource,
+        parent_ad_group_criterion_resource_name=parent_for_cl3,
         listing_dimension_info=dim_cl3_shop,
         targeting_negative=True,
         cpc_bid_micros=None
@@ -2902,7 +2898,7 @@ def prepare_shop_exclusion_operation(
     # Use cache if provided, otherwise query
     if listing_group_cache and ad_group_id in listing_group_cache:
         cache_entry = listing_group_cache[ad_group_id]
-        cl1_subdivision_resource = cache_entry.get('cl1_subdivision')
+        parent_for_cl3 = cache_entry.get('parent_for_cl3')
         existing_cl3_exclusions = cache_entry.get('cl3_exclusions', set())
     else:
         # Query listing group structure
@@ -2927,22 +2923,29 @@ def prepare_shop_exclusion_operation(
         if not results:
             return (None, 'error', "No listing tree found")
 
-        cl1_subdivision_resource = None
+        parent_for_cl3 = None
         existing_cl3_exclusions = set()
 
         for row in results:
             criterion = row.ad_group_criterion
             lg = criterion.listing_group
 
-            if lg.case_value.product_custom_attribute.index.name == 'INDEX3':
-                value = lg.case_value.product_custom_attribute.value
-                if value and criterion.negative:
-                    existing_cl3_exclusions.add(value.lower())
-                if lg.parent_ad_group_criterion:
-                    cl1_subdivision_resource = lg.parent_ad_group_criterion
+            # Safely get index name
+            try:
+                index_name = lg.case_value.product_custom_attribute.index.name
+            except (AttributeError, TypeError):
+                index_name = None
 
-    if not cl1_subdivision_resource:
-        return (None, 'error', "No CL1 subdivision found")
+            # Check for CL3 nodes (INDEX3) - get parent from any CL3 node
+            if index_name == 'INDEX3':
+                value_str = lg.case_value.product_custom_attribute.value
+                if value_str and criterion.negative:
+                    existing_cl3_exclusions.add(value_str.lower())
+                if lg.parent_ad_group_criterion:
+                    parent_for_cl3 = lg.parent_ad_group_criterion
+
+    if not parent_for_cl3:
+        return (None, 'error', "No parent for CL3 found")
 
     # Check if already excluded
     if shop_name.lower() in existing_cl3_exclusions:
@@ -2957,7 +2960,7 @@ def prepare_shop_exclusion_operation(
         client=client,
         customer_id=customer_id,
         ad_group_id=ad_group_id,
-        parent_ad_group_criterion_resource_name=cl1_subdivision_resource,
+        parent_ad_group_criterion_resource_name=parent_for_cl3,
         listing_dimension_info=dim_cl3_shop,
         targeting_negative=True,
         cpc_bid_micros=None
@@ -3239,8 +3242,25 @@ def process_exclusion_sheet_v2(
                     elif status == 'skip':
                         print(f"      ℹ️  {ag_name}: {msg}")
                     elif status == 'error':
-                        print(f"      ⚠️  {ag_name}: {msg}")
-                        row_errors.append(f"{ag_name}: {msg}")
+                        # Check if error is about missing CL3 structure - fall back to rebuild
+                        if 'No parent' in msg or 'No valid parent' in msg:
+                            print(f"      🔧 {ag_name}: Tree needs restructuring, using rebuild...")
+                            try:
+                                rebuild_tree_with_shop_exclusions(
+                                    client=client,
+                                    customer_id=customer_id,
+                                    ad_group_id=int(ag_id),
+                                    shop_names=[shop_name],
+                                    required_cl0_value=None  # Extract from existing tree
+                                )
+                                print(f"      ✅ {ag_name}: Rebuilt tree with exclusion")
+                            except Exception as rebuild_error:
+                                error_msg = str(rebuild_error)[:50]
+                                print(f"      ❌ {ag_name}: Rebuild failed - {error_msg}")
+                                row_errors.append(f"{ag_name}: {error_msg}")
+                        else:
+                            print(f"      ⚠️  {ag_name}: {msg}")
+                            row_errors.append(f"{ag_name}: {msg}")
             else:
                 print(f"   ⚠️  Campaign not found: {campaign_name}")
 

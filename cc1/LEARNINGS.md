@@ -1256,6 +1256,37 @@ _#claude-session:2025-12-16_
 **File**: campaign_processor.py build_listing_tree_for_uitbreiding(), process_uitbreiding_sheet(), process_exclusion_sheet_v2()
 _#claude-session:2025-12-16_
 
+### Fallback to Tree Rebuild for Missing CL3 Structure
+**Problem**: Adding CL3 shop exclusions fails with "Dimension type of listing group must be the same as that of its siblings"
+**Root Cause**: Trees with structure `ROOT → CL0 → CL1` (no CL3 level) can't have CL3 added directly because siblings must have the same dimension type.
+**Symptoms**:
+- `prepare_shop_exclusion_operation` returns "No parent for CL3 found"
+- Debug shows INDEX3 nodes with `parent=(no parent)` or `type=UNKNOWN`
+- CL1 nodes are UNIT type (not SUBDIVISION), so can't add children
+**Solution**: When simple add fails, fall back to complete tree restructure:
+```python
+op, status, msg = prepare_shop_exclusion_operation(client, customer_id, ad_group_id, shop_name)
+
+if status == 'error' and 'No parent' in msg:
+    # Tree doesn't have CL3 structure - need full rebuild
+    rebuild_tree_with_shop_exclusions(
+        client=client,
+        customer_id=customer_id,
+        ad_group_id=int(ad_group_id),
+        shop_names=[shop_name],
+        required_cl0_value=None  # Extract from existing tree
+    )
+```
+**Tree Transformation**:
+- Before: `ROOT → CL0 → CL1` (no CL3)
+- After: `ROOT → CL0 → CL1 → CL3 shops + CL3 OTHERS`
+**Benefits**:
+- Simple approach works for trees WITH CL3 (fast, no rebuild)
+- Fallback handles trees WITHOUT CL3 (slower, but works)
+- Preserves existing CL0, CL1 values and item ID exclusions
+**File**: campaign_processor.py process_exclusion_sheet_v2()
+_#claude-session:2026-01-09_
+
 ### Optimizing Google Ads API with Prefetching and Batch Mutations
 **Pattern**: Pre-fetch data in single queries and batch mutations for faster processing
 **Use Case**: process_exclusion_sheet_v2 was slow due to per-campaign queries and individual mutations
