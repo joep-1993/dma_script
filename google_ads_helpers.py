@@ -514,3 +514,86 @@ def add_shopping_product_ad(client, customer_id, ad_group_resource_name):
     except GoogleAdsException as ex:
         print(f"      ⚠️  Failed to create shopping ad: {ex}")
         return None
+
+def enable_negative_list_for_campaign(
+    client,
+    customer_id: str,
+    campaign_resource_name: str,
+    negative_list_name: str
+):
+    """
+    Enable a negative keyword list (shared set) for a campaign.
+
+    Looks up the shared set by name and links it to the campaign.
+
+    Args:
+        client: GoogleAdsClient instance
+        customer_id: Google Ads customer ID
+        campaign_resource_name: Resource name of the campaign
+        negative_list_name: Name of the negative keyword list (shared set)
+
+    Returns:
+        str: Resource name of the campaign shared set link, or None if failed
+    """
+    ga_service = client.get_service("GoogleAdsService")
+
+    # First, look up the shared set by name
+    query = f"""
+        SELECT shared_set.resource_name, shared_set.name
+        FROM shared_set
+        WHERE shared_set.name = '{negative_list_name}'
+            AND shared_set.type = 'NEGATIVE_KEYWORDS'
+            AND shared_set.status = 'ENABLED'
+        LIMIT 1
+    """
+
+    shared_set_resource_name = None
+    try:
+        response = ga_service.search(customer_id=customer_id, query=query)
+        for row in response:
+            shared_set_resource_name = row.shared_set.resource_name
+            break
+    except GoogleAdsException as ex:
+        print(f"      ⚠️  Error looking up negative list '{negative_list_name}': {ex}")
+        return None
+
+    if not shared_set_resource_name:
+        print(f"      ⚠️  Negative list '{negative_list_name}' not found")
+        return None
+
+    # Check if already linked
+    query = f"""
+        SELECT campaign_shared_set.resource_name
+        FROM campaign_shared_set
+        WHERE campaign_shared_set.campaign = '{campaign_resource_name}'
+            AND campaign_shared_set.shared_set = '{shared_set_resource_name}'
+            AND campaign_shared_set.status = 'ENABLED'
+        LIMIT 1
+    """
+
+    try:
+        response = ga_service.search(customer_id=customer_id, query=query)
+        for row in response:
+            print(f"      ℹ️  Negative list '{negative_list_name}' already linked to campaign")
+            return row.campaign_shared_set.resource_name
+    except GoogleAdsException:
+        pass  # Not linked yet, proceed
+
+    # Create the campaign shared set link
+    campaign_shared_set_service = client.get_service("CampaignSharedSetService")
+    campaign_shared_set_operation = client.get_type("CampaignSharedSetOperation")
+    campaign_shared_set = campaign_shared_set_operation.create
+
+    campaign_shared_set.campaign = campaign_resource_name
+    campaign_shared_set.shared_set = shared_set_resource_name
+
+    try:
+        response = campaign_shared_set_service.mutate_campaign_shared_sets(
+            customer_id=customer_id, operations=[campaign_shared_set_operation]
+        )
+        resource_name = response.results[0].resource_name
+        print(f"      ✅ Negative list '{negative_list_name}' linked to campaign")
+        return resource_name
+    except GoogleAdsException as ex:
+        print(f"      ⚠️  Failed to link negative list: {ex}")
+        return None

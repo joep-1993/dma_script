@@ -1366,6 +1366,181 @@ pip3 install -r requirements.txt
 ```
 _#claude-session:2025-11-11_
 
+### FieldMask Must Use Protobuf Type, Not Google Ads API Type
+**Problem**: Pausing ad groups failed with error "Specified type 'FieldMask' does not exist in Google Ads API v22"
+**Symptoms**: `client.get_type("FieldMask")` raises error when trying to create field mask for update operations
+**Root Cause**: FieldMask is a protobuf type from `google.protobuf.field_mask_pb2`, not a Google Ads API type
+**Broken Code**:
+```python
+# WRONG: Using client.get_type for FieldMask
+client.copy_from(
+    ad_group_operation.update_mask,
+    client.get_type("FieldMask")(paths=["status"])
+)
+```
+**Fixed Code**:
+```python
+# CORRECT: Import and use protobuf FieldMask directly
+from google.protobuf import field_mask_pb2
+
+ad_group_operation.update_mask.CopyFrom(
+    field_mask_pb2.FieldMask(paths=["status"])
+)
+```
+**Impact**: Update operations (pause, enable, modify) now work correctly
+_#claude-session:2026-02-05_
+
+### Reverse Inclusion Function (Pause Ad Groups)
+**Purpose**: Pause existing ad groups - reverse of `process_inclusion_sheet_v2` which creates them
+**Function**: `process_reverse_inclusion_sheet_v2()` in campaign_processor.py
+**Sheet Name**: 'terugdraaien' (in reverse exclusion Excel file)
+**Column Structure**:
+| Column | Index | Content |
+|--------|-------|---------|
+| A | 0 | shop_name (used to build ad group name) |
+| B | 1 | Shop ID (not used) |
+| C | 2 | maincat (used to build campaign name) |
+| D | 3 | maincat_id (not used) |
+| E | 4 | custom label 1 |
+| F | 5 | budget (ignored for pausing) |
+| G | 6 | result (TRUE/FALSE) |
+| H | 7 | error message |
+
+**Naming Conventions**:
+- Campaign name: `PLA/{maincat} store_{cl1}`
+- Ad group name: `PLA/{shop_name}_{cl1}`
+
+**Helper Functions Added**:
+- `pause_ad_group(client, customer_id, ad_group_resource_name)` - Sets ad group status to PAUSED
+- `find_ad_group_in_campaign(client, customer_id, campaign_name, ad_group_name)` - Finds ad group by names
+
+**Flow**:
+1. Groups rows by campaign (maincat + cl1)
+2. Within each campaign, collects shop_names (ad groups)
+3. Finds each ad group by campaign name + ad group name
+4. Pauses it if not already paused
+5. Updates result column G with TRUE/FALSE
+_#claude-session:2026-02-05_
+
+### Pass Correct Workbook to Processing Functions
+**Problem**: Function reported "Sheet 'terugdraaien' not found" even though sheet existed
+**Symptoms**: Logs showed sheet in available sheets list, but function couldn't find it
+**Root Cause**: Function was passed wrong workbook - main workbook instead of reverse_workbook
+**Example**:
+```python
+# WRONG: Passing main workbook (doesn't have 'terugdraaien' sheet)
+process_reverse_inclusion_sheet_v2(client, workbook, CUSTOMER_ID, working_copy_path)
+
+# CORRECT: Pass reverse_workbook which contains the sheet
+process_reverse_inclusion_sheet_v2(client, reverse_workbook, CUSTOMER_ID, reverse_working_copy_path)
+```
+**Debugging Tip**: Always check "Available sheets" in logs matches expected sheets for the function
+_#claude-session:2026-02-05_
+
+### Google Ads: Remove Ad Group Uses Remove Operation, Not Status
+**Problem**: Setting ad_group.status to REMOVED fails with "Enum value 'REMOVED' cannot be used"
+**Symptoms**: `INVALID_ARGUMENT` error when trying to delete ad groups
+**Root Cause**: REMOVED is a read-only status - you cannot set it directly
+**Broken Code**:
+```python
+ad_group = ad_group_operation.update
+ad_group.resource_name = ad_group_resource_name
+ad_group.status = client.enums.AdGroupStatusEnum.REMOVED  # NOT ALLOWED
+```
+**Fixed Code**:
+```python
+# Use the remove operation instead
+ad_group_operation.remove = ad_group_resource_name
+```
+**Impact**: Ad groups are now properly deleted instead of failing silently
+_#claude-session:2026-02-05_
+
+### GAQL: Pipe Character Does Not Need Escaping
+**Problem**: Escaping `|` with `\|` breaks GAQL queries
+**Symptoms**: Query error "invalid value 'PLA/Hbm-machines.com\." - string gets truncated at escaped pipe
+**Root Cause**: GAQL only requires single quotes to be escaped, not pipes or backslashes
+**Broken Code**:
+```python
+def escape_gaql_string(s):
+    s = s.replace("\\", "\\\\")  # Unnecessary
+    s = s.replace("'", "\\'")
+    s = s.replace("|", "\\|")  # BREAKS queries!
+    return s
+```
+**Fixed Code**:
+```python
+def escape_gaql_string(s):
+    s = s.replace("'", "\\'")  # Only single quotes need escaping
+    return s
+```
+**Impact**: Shop names with `|` (e.g., "Makro.nl|Marketplace") now work correctly in queries
+_#claude-session:2026-02-05_
+
+### Shop Name Splitting for CL3 Targeting
+**Problem**: Shop names like "Hbm-machines.com|NL" need to be split for CL3 targeting
+**Context**: Some shops have country/locale suffix after `|` that shouldn't be part of targeting
+**Solution**: Split shop name at `|` for targeting, keep original for ad group naming
+```python
+# For CL3 targeting, split shop_name at | and use first part
+shop_name_for_targeting = shop_name.split('|')[0] if '|' in shop_name else shop_name
+# Ad group name still uses original: PLA/Hbm-machines.com|NL_a
+# CL3 targeting uses: Hbm-machines.com
+```
+**Mapping for Results**: Create targeting-to-original mapping to track Excel rows correctly:
+```python
+targeting_to_original = {}
+for orig, tgt in zip(shop_names, shop_names_for_targeting):
+    if tgt not in targeting_to_original:
+        targeting_to_original[tgt] = []
+    targeting_to_original[tgt].append(orig)
+```
+**Applied to**: process_inclusion_sheet_v2, process_exclusion_sheet_v2, process_reverse_exclusion_sheet
+_#claude-session:2026-02-05_
+
+### GAQL: Filter for Active Ad Groups More Explicitly
+**Problem**: Query returns ad group that appears ENABLED but remove operation fails with "not allowed for removed resources"
+**Symptoms**: Conflicting status - query says ENABLED, API says REMOVED
+**Root Cause**: Multiple ad groups with same name (one removed, one active), or stale data
+**Improved Query**:
+```python
+# More explicit filtering
+query = f"""
+    SELECT ad_group.id, ad_group.resource_name, ad_group.name, ad_group.status,
+           campaign.id, campaign.name, campaign.resource_name, campaign.status
+    FROM ad_group
+    WHERE campaign.name = '{escaped_campaign_name}'
+    AND ad_group.name = '{escaped_ad_group_name}'
+    AND ad_group.status IN ('ENABLED', 'PAUSED')  -- Explicit, not just != 'REMOVED'
+    AND campaign.status != 'REMOVED'  -- Also filter removed campaigns
+    LIMIT 1
+"""
+```
+**Impact**: Prevents returning stale/removed ad groups that cause API errors
+_#claude-session:2026-02-05_
+
+### Rate Limiting for CONCURRENT_MODIFICATION in Inclusion Processing
+**Problem**: CONCURRENT_MODIFICATION errors when creating ad groups and listing trees
+**Symptoms**: "Multiple requests were attempting to modify the same resource at once"
+**Solution**: Add strategic time.sleep() calls between operations:
+```python
+# After campaign setup: 1.0s
+time.sleep(1.0)
+
+# After ad group creation, before tree: 1.0s
+time.sleep(1.0)
+
+# After tree creation, before ad creation: 2.0s (KEY!)
+time.sleep(2.0)
+
+# After each ad group completes: 1.0s
+time.sleep(1.0)
+
+# After each campaign: 2.0s
+time.sleep(2.0)
+```
+**Key Insight**: The 2.0s sleep after tree creation is critical - tree changes need time to settle before creating shopping product ad
+_#claude-session:2026-02-05_
+
 ---
 _Created from template: 2025-11-10_
-_Updated: 2025-11-19_
+_Updated: 2026-02-05_

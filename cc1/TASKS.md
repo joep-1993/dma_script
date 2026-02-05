@@ -14,6 +14,40 @@ _Tasks currently being worked on (max 1-2 items)_
 ## Completed
 _Recently finished tasks_
 
+- [x] Add shop name splitting at | for CL3 targeting #claude-session:2026-02-05 #priority:high
+  - Shop names like "Hbm-machines.com|NL" are split at | for CL3 targeting → "Hbm-machines.com"
+  - Ad group names still use original full name (e.g., "PLA/Hbm-machines.com|NL_a")
+  - Applied to: process_inclusion_sheet_v2, process_exclusion_sheet_v2, process_reverse_exclusion_sheet
+  - Targeting-to-original mapping preserves Excel row tracking
+- [x] Fix CONCURRENT_MODIFICATION errors in process_inclusion_sheet_v2 #claude-session:2026-02-05 #priority:high
+  - Added time.sleep() calls at key points:
+    - After campaign setup: 1.0s
+    - After ad group creation: 1.0s
+    - After tree creation: 2.0s (key fix for ad creation errors)
+    - After each ad group completes: 1.0s
+    - After each campaign: 2.0s
+- [x] Fix remove_ad_group function #claude-session:2026-02-05 #priority:high
+  - Changed from setting status to REMOVED (not allowed) to using remove operation
+  - `ad_group_operation.remove = ad_group_resource_name`
+- [x] Fix find_ad_group_in_campaign to filter removed resources #claude-session:2026-02-05 #priority:medium
+  - Changed `ad_group.status != 'REMOVED'` to `ad_group.status IN ('ENABLED', 'PAUSED')`
+  - Added `campaign.status != 'REMOVED'` filter
+  - Prevents finding stale/removed ad groups
+- [x] Fix GAQL escaping for pipe character #claude-session:2026-02-05 #priority:medium
+  - Removed unnecessary `|` escaping that was breaking queries
+  - GAQL only needs single quotes escaped, not backslashes or pipes
+- [x] Update process_reverse_inclusion_sheet_v2 configuration #claude-session:2026-02-05 #priority:high
+  - Changed sheet name from 'terugdraaien' to 'toevoegen'
+  - Updated column indices for toevoegen sheet structure
+  - Function now REMOVES ad groups (not pauses)
+- [x] Create reverse inclusion function to pause ad groups #claude-session:2026-02-05 #priority:high
+  - New `process_reverse_inclusion_sheet_v2()` function - removes ad groups instead of creating them
+  - Reads from 'toevoegen' sheet in reverse exclusion Excel file
+  - Groups by campaign (maincat + cl1), finds ad groups by shop_name
+  - Campaign naming: `PLA/{maincat} store_{cl1}`, Ad group naming: `PLA/{shop_name}_{cl1}`
+  - Added helper functions: `pause_ad_group()`, `enable_ad_group()`, `remove_ad_group()`, `find_ad_group_in_campaign()`
+  - Fixed FieldMask error - use `google.protobuf.field_mask_pb2.FieldMask` not `client.get_type("FieldMask")`
+  - Column structure: A=shop_name, B=Shop ID, C=maincat, D=maincat_id, E=cl1, F=budget, G=result, H=error
 - [x] Add fallback to rebuild_tree_with_shop_exclusions for trees without CL3 structure #claude-session:2026-01-09 #priority:high
   - Trees with structure ROOT → CL0 → CL1 (no CL3) can't have CL3 added as sibling
   - Error: "Dimension type of listing group must be the same as that of its siblings"
